@@ -451,7 +451,8 @@ class RFOD:
         return cell_scores
 
     def predict(self, X: Union[pd.DataFrame, np.ndarray], return_cell_scores: bool = False,
-                clip_scores: bool = False, clip_min: float = 0.0, clip_max: float = 1.0) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                clip_scores: bool = False, clip_min: float = 0.0, clip_max: float = 1.0,
+                batch_size: int = 50000) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
         预测异常分数
 
@@ -461,6 +462,7 @@ class RFOD:
             clip_scores: 是否裁剪分数到指定范围（默认True）
             clip_min: 裁剪下限（默认0.0）
             clip_max: 裁剪上限（默认1.0）
+            batch_size: 批处理大小，越大使用内存越多但速度可能更快（默认50000）
 
         返回:
             row_scores: 行级异常分数
@@ -471,13 +473,13 @@ class RFOD:
 
         n_samples = len(X)
         if self.verbose:
-            print(f"[RFOD] 开始预测 {n_samples} 个样本...")
+            print(f"[RFOD] 开始预测 {n_samples} 个样本... (batch_size={batch_size})")
 
         predictions = {}
         uncertainties = {}
 
         for feature_idx in range(self.n_features_):
-            pred, uncert = self._predict_feature(X, feature_idx)
+            pred, uncert = self._predict_feature(X, feature_idx, batch_size=batch_size)
             predictions[feature_idx] = pred
             uncertainties[feature_idx] = uncert
 

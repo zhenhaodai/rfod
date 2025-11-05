@@ -28,6 +28,7 @@ def train_and_infer(
     # 推理相关参数
     test_csv: Optional[str] = None,
     output_path: str = "result/prediction.csv",
+    batch_size: int = 50000,  # 推理批处理大小
     # 模型参数
     alpha: float = 0.02,
     beta: float = 0.7,
@@ -147,7 +148,7 @@ def train_and_infer(
     rfod.fit(X_train)
 
     # 在训练集上预测（用于阈值计算）
-    train_scores = rfod.predict(X_train)
+    train_scores = rfod.predict(X_train, batch_size=batch_size)
 
     # ============ 第二步：确定阈值 ============
     if verbose:
@@ -193,7 +194,7 @@ def train_and_infer(
                 print(f"  验证集异常样本数: {y_true.sum()} ({y_true.sum()/len(y_true)*100:.2f}%)")
 
             # 在验证集上预测
-            valid_scores = rfod.predict(X_valid)
+            valid_scores = rfod.predict(X_valid, batch_size=batch_size)
 
             # 根据策略选择阈值
             if threshold_strategy == "train_quantile":
@@ -336,7 +337,7 @@ def train_and_infer(
         if verbose:
             print("--> 开始预测...")
 
-        test_scores = rfod.predict(X_test, clip_scores=False)
+        test_scores = rfod.predict(X_test, clip_scores=False, batch_size=batch_size)
 
         original_min = test_scores.min()
         original_max = test_scores.max()
@@ -431,22 +432,23 @@ def train_and_infer(
 
 
 if __name__ == "__main__":
-    # 示例用法
+    # 高性能配置示例 - 针对240核心CPU优化
     results = train_and_infer(
         # 数据路径
         train_csv="data/processes_train.csv",
         valid_csv="data/processes_valid.csv",  # 可选，用于评估
         test_csv="data/processes_test.csv",    # 可选，用于最终推理
         output_path="result/submission.csv",
+        batch_size=100000,   # 批处理大小：增大以利用大内存
 
-        # 模型参数
+        # 模型参数 - 优化配置
         alpha=0.005,
         beta=0.7,
-        n_estimators=80,
-        max_depth=20,
+        n_estimators=80,     # 树的数量
+        max_depth=20,        # 树的深度
         random_state=42,
-        n_jobs=-1,
-        backend="sklearn",  # 或 "cuml" 如果有GPU
+        n_jobs=240,          # 使用全部240核心（或用-1自动检测）
+        backend="sklearn",   # 或 "cuml" 如果有GPU
 
         # 数据处理
         process_args=False,
