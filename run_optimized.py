@@ -10,7 +10,6 @@ if __name__ == "__main__":
 
     results = train_and_infer(
         train_csv="data/processes_train.csv",
-        valid_csv="data/processes_valid.csv",
         test_csv="data/processes_test.csv",
         output_path="result/submission.csv",
 
@@ -25,12 +24,7 @@ if __name__ == "__main__":
         process_args=False,
         drop_labelled_anomalies=False,
 
-        threshold=None,
-        threshold_percentile=99.7,
-        threshold_strategy="train_quantile",
-        use_threshold=False,
         normalize_method="minmax",
-
         out_dir="model",
         verbose=True
     )
