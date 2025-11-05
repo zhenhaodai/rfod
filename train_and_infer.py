@@ -94,7 +94,13 @@ def train_and_infer(
     metrics = {}
     train_scores = None
 
-    if threshold is not None:
+    if not use_threshold:
+        thr = 0.5
+        thr_src = "not_used"
+        if verbose:
+            print("Skipping threshold computation (use_threshold=False)")
+
+    elif threshold is not None:
         thr = float(threshold)
         thr_src = "user_provided"
         if verbose:

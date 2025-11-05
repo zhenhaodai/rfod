@@ -10,7 +10,7 @@ if __name__ == "__main__":
 
     results = train_and_infer(
         train_csv="data/processes_train.csv",
-        valid_csv=None,  # No validation - skip train/valid inference
+        valid_csv=None,
         test_csv="data/processes_test.csv",
         output_path="result/submission.csv",
 
@@ -25,9 +25,7 @@ if __name__ == "__main__":
         process_args=False,
         drop_labelled_anomalies=False,
 
-        threshold=0.5,  # Fixed threshold - no train/valid inference needed
-        use_threshold=False,  # Output scores instead of binary
-
+        use_threshold=False,
         normalize_method="minmax",
         out_dir="model",
         verbose=True
