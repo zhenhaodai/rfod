@@ -5,21 +5,21 @@ from train_and_infer import train_and_infer
 
 if __name__ == "__main__":
     print("RFOD Training and Inference")
-    print("CPU cores: 240")
-    print("Optimization: Multi-threading + Large batch processing\n")
+    print("Local configuration: 8GB RAM")
+    print("Optimization: Reduced memory usage\n")
 
     results = train_and_infer(
         train_csv="data/processes_train.csv",
         test_csv="data/processes_test.csv",
         output_path="result/submission.csv",
 
-        batch_size=100000,
+        batch_size=10000,      # Reduced for 8GB RAM
         alpha=0.005,
         beta=0.7,
         n_estimators=80,
         max_depth=20,
         random_state=42,
-        n_jobs=240,
+        n_jobs=4,              # Adjust based on your CPU cores
 
         process_args=False,
         drop_labelled_anomalies=False,
