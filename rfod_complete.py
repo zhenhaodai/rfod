@@ -229,19 +229,42 @@ class RFOD:
         beta: float = 0.7,
         n_estimators: int = 30,
         max_depth: int = 6,
+        max_samples: Optional[Union[int, float]] = None,  # NEW: limit samples per tree
         random_state: int = 42,
         n_jobs: int = -1,
         verbose: bool = True,
-        exclude_weak: bool = True  # NEW: exclude weak predictable features
+        exclude_weak: bool = True
     ):
+        """
+        Random Forest Outlier Detection
+
+        Args:
+            alpha: Quantile for normalization (default: 0.02)
+            beta: Proportion of trees to keep after pruning (default: 0.7)
+            n_estimators: Number of trees per forest (default: 30)
+            max_depth: Maximum tree depth (default: 6)
+                - For 8GB RAM: max_depth <= 10
+                - For 16GB RAM: max_depth <= 12
+                - For 32GB+ RAM: max_depth <= 15
+            max_samples: Max samples per tree for memory efficiency
+                - None: use all samples (default)
+                - float (0.0-1.0): fraction of samples
+                - int: absolute number of samples
+                - Recommended for large datasets: 0.5-0.8
+            random_state: Random seed
+            n_jobs: Parallel jobs (-1 = all cores)
+            verbose: Print progress
+            exclude_weak: Exclude weak predictable features
+        """
         self.alpha = alpha
         self.beta = beta
         self.n_estimators = n_estimators
         self.max_depth = max_depth
+        self.max_samples = max_samples  # NEW
         self.random_state = random_state
         self.n_jobs = n_jobs
         self.verbose = verbose
-        self.exclude_weak = exclude_weak  # NEW
+        self.exclude_weak = exclude_weak
 
         self.forests_ = {}
         self.feature_types_ = {}
@@ -249,8 +272,8 @@ class RFOD:
         self.feature_names_ = []
         self.n_features_ = 0
         self.encoders_: Dict[str, LabelEncoder] = {}
-        self.predictable_features_ = []  # NEW: track which features are predictable
-        self.excluded_features_ = []     # NEW: track which features are excluded
+        self.predictable_features_ = []
+        self.excluded_features_ = []
 
     def _identify_feature_types(self, X: pd.DataFrame) -> Dict[int, str]:
         feature_types = {}
@@ -311,6 +334,7 @@ class RFOD:
             forest = RandomForestClassifier(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
+                max_samples=self.max_samples,  # NEW: memory optimization
                 random_state=self.random_state,
                 n_jobs=self.n_jobs,
                 oob_score=True,
@@ -321,6 +345,7 @@ class RFOD:
             forest = RandomForestRegressor(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
+                max_samples=self.max_samples,  # NEW: memory optimization
                 random_state=self.random_state,
                 n_jobs=self.n_jobs,
                 oob_score=True,
@@ -741,6 +766,7 @@ def train_and_infer(
     beta: float = 0.7,
     n_estimators: int = 30,
     max_depth: int = 6,
+    max_samples: Optional[Union[int, float]] = None,  # NEW: memory optimization
     random_state: int = 42,
     n_jobs: int = -1,
     process_args: Union[bool, str] = "topk",
@@ -748,7 +774,7 @@ def train_and_infer(
     normalize_method: str = "minmax",
     out_dir: str = "model",
     verbose: bool = True,
-    exclude_weak: bool = True  # NEW: exclude weak predictable features
+    exclude_weak: bool = True
 ) -> Dict:
 
     results = {}
@@ -790,10 +816,11 @@ def train_and_infer(
         'beta': beta,
         'n_estimators': n_estimators,
         'max_depth': max_depth,
+        'max_samples': max_samples,  # NEW: memory optimization
         'random_state': random_state,
         'n_jobs': n_jobs,
         'verbose': verbose,
-        'exclude_weak': exclude_weak  # NEW: use causal dependency filtering
+        'exclude_weak': exclude_weak
     }
 
     rfod = RFOD(**params)
@@ -921,32 +948,45 @@ def train_and_infer(
 # ============================================================================
 
 if __name__ == "__main__":
+    print("="*70)
     print("RFOD Training and Inference")
-    print("Local configuration: 8GB RAM")
-    print("Args processing: Top-K + Statistics (research-based)")
-    print("Feature selection: Causal dependency analysis (research-based)\n")
+    print("="*70)
+    print("Configuration:")
+    print("  - Memory: 8GB RAM (optimized)")
+    print("  - Args processing: Top-K + Statistics (research-based)")
+    print("  - Feature selection: Causal dependency analysis")
+    print("  - Memory optimization: max_depth=8, max_samples=0.7")
+    print("="*70 + "\n")
 
     results = train_and_infer(
         train_csv="data/processes_train.csv",
         test_csv="data/processes_test.csv",
         output_path="result/submission.csv",
 
+        # Memory-optimized parameters for 8GB RAM
         batch_size=10000,
         alpha=0.005,
         beta=0.7,
-        n_estimators=80,
-        max_depth=20,
+        n_estimators=30,        # Reduced from 80 (saves memory)
+        max_depth=8,            # Reduced from 20 (CRITICAL for memory)
+        max_samples=0.7,        # NEW: Use 70% samples per tree (saves memory)
         random_state=42,
-        n_jobs=4,
+        n_jobs=2,               # Reduced from 4 (each job uses memory)
 
-        process_args="topk",  # Options: False, "topk", "full"
+        process_args="topk",
         drop_labelled_anomalies=False,
-        exclude_weak=True,  # NEW: Exclude weak predictable features (timestamp, processId)
+        exclude_weak=True,
 
         normalize_method="minmax",
         out_dir="model",
         verbose=True
     )
+
+    # For higher memory systems (16GB+), use these settings:
+    # n_estimators=50, max_depth=10, max_samples=0.8, n_jobs=4
+
+    # For very large datasets or low memory (4GB), use:
+    # n_estimators=20, max_depth=6, max_samples=0.5, n_jobs=1
 
     print(f"\nModel saved: {results.get('model_path')}")
     if 'output_path' in results:
