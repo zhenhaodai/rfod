@@ -44,7 +44,7 @@ def parse_list_field(value: Any) -> List:
 
 
 def extract_arg_features(df: pd.DataFrame, args_col: str = "args") -> pd.DataFrame:
-    """Flatten args field"""
+    """Flatten args field (old method - causes dimension explosion)"""
     if args_col not in df.columns:
         print(f"Warning: '{args_col}' column not found, skipping args extraction")
         return df
@@ -77,6 +77,64 @@ def extract_arg_features(df: pd.DataFrame, args_col: str = "args") -> pd.DataFra
     return df
 
 
+def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int = 5) -> pd.DataFrame:
+    """
+    Extract Top-K most frequent args + statistics (recommended by research)
+    Based on: "On Improving Deep Learning Trace Analysis with System Call Arguments" (IEEE 2021)
+
+    Strategy:
+    1. Find Top-K most frequent argument names
+    2. Extract their values as features
+    3. Add statistical features (counts by type)
+    """
+    if args_col not in df.columns:
+        print(f"Warning: '{args_col}' column not found, skipping args extraction")
+        return df
+
+    # Step 1: Count argument name frequencies
+    arg_freq = {}
+    for args_str in df[args_col]:
+        for arg in parse_list_field(args_str):
+            if isinstance(arg, dict) and "name" in arg:
+                name = arg.get("name")
+                arg_freq[name] = arg_freq.get(name, 0) + 1
+
+    # Step 2: Select Top-K
+    top_args = sorted(arg_freq.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    top_names = [name for name, count in top_args]
+
+    if top_names:
+        print(f"Top-{top_k} args: {top_names}")
+
+    # Step 3: Extract features for each row
+    features_list = []
+    for args_str in df[args_col]:
+        parsed = parse_list_field(args_str)
+
+        # Top-K argument values
+        topk_features = {f'arg_{name}': None for name in top_names}
+        for arg in parsed:
+            if isinstance(arg, dict) and arg.get("name") in top_names:
+                topk_features[f'arg_{arg["name"]}'] = arg.get("value")
+
+        # Statistical features (based on research categories)
+        stats_features = {
+            'args_count': len(parsed),
+            'args_int_count': sum(1 for a in parsed if isinstance(a, dict) and a.get('type') == 'int'),
+            'args_str_count': sum(1 for a in parsed if isinstance(a, dict) and a.get('type') == 'string'),
+            'args_ptr_count': sum(1 for a in parsed if isinstance(a, dict) and ('ptr' in str(a.get('type', '')) or '*' in str(a.get('type', '')))),
+            'args_unique_names': len(set(a.get('name') for a in parsed if isinstance(a, dict) and 'name' in a))
+        }
+
+        features_list.append({**topk_features, **stats_features})
+
+    args_df = pd.DataFrame(features_list)
+    df = pd.concat([df.reset_index(drop=True), args_df.reset_index(drop=True)], axis=1)
+
+    print(f"Args processed: {len(top_names)} Top-K features + 5 statistics = {len(args_df.columns)} new features")
+    return df
+
+
 def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
     """Convert dtypes: numeric for timestamp/argsNum/stack_depth, categorical for others"""
     numeric_cols = ["timestamp", "argsNum", "stack_depth"]
@@ -89,8 +147,16 @@ def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def clean_csv(input_path: str, output_path: str, process_args: bool = True, save: bool = True):
-    """Main data cleaning function"""
+def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] = "topk", save: bool = True):
+    """
+    Main data cleaning function
+
+    Args:
+        process_args: How to process args column
+            - False: Drop args completely (no processing)
+            - True or "full": Full expansion (causes 100+ features - NOT RECOMMENDED)
+            - "topk" or "smart": Top-K + statistics (RECOMMENDED, 10-15 features)
+    """
     print(f"Processing: {input_path}")
     df = pd.read_csv(input_path)
 
@@ -104,14 +170,22 @@ def clean_csv(input_path: str, output_path: str, process_args: bool = True, save
     print(f"Dropped columns: {drop_cols}")
 
     args_col_present = "args" in df.columns
-    if process_args and args_col_present:
+
+    if not args_col_present:
+        if process_args:
+            print("Warning: 'args' column not found")
+    elif process_args == False:
+        df = df.drop(columns=["args"], errors="ignore")
+        print("Args dropped (process_args=False)")
+    elif process_args in [True, "full"]:
+        print("WARNING: Full args expansion may create 100+ sparse features!")
         df = extract_arg_features(df, args_col="args")
         df = df.drop(columns=["args"], errors="ignore")
-    elif not process_args and args_col_present:
+    elif process_args in ["topk", "smart"]:
+        df = extract_args_topk_stats(df, args_col="args", top_k=5)
         df = df.drop(columns=["args"], errors="ignore")
-        print("Skipped 'args' processing")
-    elif process_args and not args_col_present:
-        print("Warning: 'args' column not found")
+    else:
+        raise ValueError(f"Unknown process_args value: {process_args}. Use False, True, 'full', 'topk', or 'smart'")
 
     if "processId" in df.columns and "timestamp" in df.columns:
         df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
@@ -470,7 +544,7 @@ REQ_FEATURES = [
 ]
 
 
-def _safe_clean_csv(input_path: str, process_args: bool = True) -> pd.DataFrame:
+def _safe_clean_csv(input_path: str, process_args: Union[bool, str] = "topk") -> pd.DataFrame:
     tmp_out = os.path.join(tempfile.gettempdir(), f"cleaned_{os.path.basename(input_path)}")
     df = clean_csv(input_path, tmp_out, process_args=process_args, save=False)
     return df
@@ -510,7 +584,7 @@ def train_and_infer(
     max_depth: int = 6,
     random_state: int = 42,
     n_jobs: int = -1,
-    process_args: bool = False,
+    process_args: Union[bool, str] = "topk",
     drop_labelled_anomalies: bool = False,
     normalize_method: str = "minmax",
     out_dir: str = "model",
@@ -679,7 +753,7 @@ def train_and_infer(
 if __name__ == "__main__":
     print("RFOD Training and Inference")
     print("Local configuration: 8GB RAM")
-    print("Optimization: Reduced memory usage\n")
+    print("Args processing: Top-K + Statistics (research-based)\n")
 
     results = train_and_infer(
         train_csv="data/processes_train.csv",
@@ -694,7 +768,7 @@ if __name__ == "__main__":
         random_state=42,
         n_jobs=4,
 
-        process_args=False,
+        process_args="topk",  # Options: False, "topk", "full"
         drop_labelled_anomalies=False,
 
         normalize_method="minmax",
