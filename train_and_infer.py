@@ -84,8 +84,6 @@ def train_and_infer(
     rfod = RFOD(**params)
     rfod.fit(X_train)
 
-    train_scores = rfod.predict(X_train, batch_size=batch_size)
-
     if verbose:
         print("\n" + "="*60)
         print("STEP 2: Determining Threshold")
@@ -94,8 +92,15 @@ def train_and_infer(
     thr = None
     thr_src = None
     metrics = {}
+    train_scores = None
 
-    if threshold is not None:
+    if not use_threshold:
+        thr = 0.5
+        thr_src = "not_used"
+        if verbose:
+            print("Skipping threshold computation (use_threshold=False)")
+
+    elif threshold is not None:
         thr = float(threshold)
         thr_src = "user_provided"
         if verbose:
@@ -112,6 +117,8 @@ def train_and_infer(
         if "target" not in df_valid.columns:
             if verbose:
                 print("Warning: no target column in validation set, using train quantile")
+            if train_scores is None:
+                train_scores = rfod.predict(X_train, batch_size=batch_size)
             thr = float(np.percentile(train_scores, threshold_percentile))
             thr_src = f"train_quantile_{threshold_percentile}"
         else:
@@ -121,13 +128,14 @@ def train_and_infer(
             if verbose:
                 print(f"Valid samples: {len(X_valid)}, Anomalies: {y_true.sum()} ({y_true.sum()/len(y_true)*100:.2f}%)")
 
-            valid_scores = rfod.predict(X_valid, batch_size=batch_size)
-
             if threshold_strategy == "train_quantile":
+                if train_scores is None:
+                    train_scores = rfod.predict(X_train, batch_size=batch_size)
                 thr = float(np.percentile(train_scores, threshold_percentile))
                 thr_src = f"train_quantile_{threshold_percentile}"
 
             elif threshold_strategy == "valid_best_f1":
+                valid_scores = rfod.predict(X_valid, batch_size=batch_size)
                 candidates = _scan_thresholds_from_scores(valid_scores, n_points=256)
                 best_f1, thr = -1.0, candidates[0]
                 for t in tqdm(candidates, desc="Searching best F1 threshold", disable=not verbose):
@@ -136,8 +144,11 @@ def train_and_infer(
                     if f1v > best_f1:
                         best_f1, thr = f1v, float(t)
                 thr_src = "valid_best_f1"
+                y_pred = (valid_scores > thr).astype(int)
+                metrics = _compute_binary_metrics(y_true, valid_scores, y_pred)
 
             elif threshold_strategy == "valid_best_j":
+                valid_scores = rfod.predict(X_valid, batch_size=batch_size)
                 candidates = _scan_thresholds_from_scores(valid_scores, n_points=256)
                 best_j, thr = -1.0, candidates[0]
                 for t in tqdm(candidates, desc="Searching best Youden's J threshold", disable=not verbose):
@@ -153,12 +164,11 @@ def train_and_infer(
                     if j > best_j:
                         best_j, thr = j, float(t)
                 thr_src = "valid_best_j"
+                y_pred = (valid_scores > thr).astype(int)
+                metrics = _compute_binary_metrics(y_true, valid_scores, y_pred)
 
             else:
                 raise ValueError(f"Unknown threshold_strategy: {threshold_strategy}")
-
-            y_pred = (valid_scores > thr).astype(int)
-            metrics = _compute_binary_metrics(y_true, valid_scores, y_pred)
 
             if verbose:
                 print(f"\nThreshold: {thr:.6f} ({thr_src})")
@@ -169,6 +179,8 @@ def train_and_infer(
                     print(f"  ROC-AUC: {metrics['roc_auc']:.4f}, PR-AUC: {metrics['pr_auc']:.4f}")
 
     else:
+        if train_scores is None:
+            train_scores = rfod.predict(X_train, batch_size=batch_size)
         thr = float(np.percentile(train_scores, threshold_percentile))
         thr_src = f"train_quantile_{threshold_percentile}"
         if verbose:
