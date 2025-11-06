@@ -83,30 +83,80 @@ def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int
     Based on: "On Improving Deep Learning Trace Analysis with System Call Arguments" (IEEE 2021)
 
     Strategy:
-    1. Find Top-K most frequent argument names
+    1. Find Top-K most frequent argument names (excluding high-cardinality features)
     2. Extract their values as features
     3. Add statistical features (counts by type)
+
+    Intelligent filtering:
+    - Excludes path-like args (pathname, filename, etc.) - too high cardinality
+    - Excludes flags/mode args - often hex values with many unique values
+    - Excludes pointer addresses - random and unpredictable
+    - Keeps numeric args (fd, pid, size) and low-cardinality categoricals
     """
     if args_col not in df.columns:
         print(f"Warning: '{args_col}' column not found, skipping args extraction")
         return df
 
-    # Step 1: Count argument name frequencies
+    # Args to exclude (high cardinality, unpredictable, or path-like)
+    EXCLUDE_ARG_NAMES = {
+        # Path-related (very high cardinality)
+        'pathname', 'filename', 'path', 'dirfd', 'oldname', 'newname',
+        'name', 'buf', 'buffer',
+        # Flags and modes (often hex, high cardinality)
+        'flags', 'mode', 'prot', 'whence',
+        # Pointers and addresses (random values)
+        'addr', 'ptr', 'address',
+        # Large strings (command lines, environment)
+        'cmd', 'argv', 'envp', 'data',
+    }
+
+    # Step 1: Count argument name frequencies with intelligent filtering
     arg_freq = {}
+    arg_cardinality = {}  # Track unique values to detect high cardinality
+
     for args_str in df[args_col]:
         for arg in parse_list_field(args_str):
             if isinstance(arg, dict) and "name" in arg:
                 name = arg.get("name")
+
+                # Skip excluded arg names
+                if name in EXCLUDE_ARG_NAMES:
+                    continue
+
+                # Skip args with 'ptr' or 'addr' in the name (pointers)
+                if 'ptr' in name.lower() or 'addr' in name.lower():
+                    continue
+
+                # Count frequency
                 arg_freq[name] = arg_freq.get(name, 0) + 1
 
-    # Step 2: Select Top-K
-    top_args = sorted(arg_freq.items(), key=lambda x: x[1], reverse=True)[:top_k]
+                # Track unique values for cardinality check
+                value = str(arg.get("value", ""))
+                if name not in arg_cardinality:
+                    arg_cardinality[name] = set()
+                arg_cardinality[name].add(value)
+
+    # Step 2: Filter out high-cardinality features
+    # If an arg has too many unique values, it's likely not predictable
+    max_cardinality_ratio = 0.7  # If >70% unique, exclude it
+    filtered_args = {}
+    for name, freq in arg_freq.items():
+        cardinality = len(arg_cardinality[name])
+        cardinality_ratio = cardinality / freq
+
+        if cardinality_ratio < max_cardinality_ratio:
+            filtered_args[name] = freq
+        else:
+            print(f"  Excluding '{name}': high cardinality ({cardinality}/{freq} = {cardinality_ratio:.2%} unique)")
+
+    # Step 3: Select Top-K from filtered args
+    top_args = sorted(filtered_args.items(), key=lambda x: x[1], reverse=True)[:top_k]
     top_names = [name for name, count in top_args]
 
     if top_names:
-        print(f"Top-{top_k} args: {top_names}")
+        print(f"Top-{top_k} args (after intelligent filtering): {top_names}")
 
-    # Step 3: Extract features for each row
+    # Step 4: Extract features for each row
     features_list = []
     for args_str in df[args_col]:
         parsed = parse_list_field(args_str)
@@ -668,7 +718,7 @@ PREDICTABLE_FEATURES = [
     "argsNum",          # Related to eventName and event type
     "returnValue",      # Related to eventName and success/failure
     "stack_depth",      # Related to call chain and event context
-    # arg_* features    # Related to eventName and process behavior
+    # arg_* features    # Intelligently filtered: excludes high-cardinality (paths, flags)
     # args_* features   # Statistical features related to event complexity
 ]
 
@@ -971,8 +1021,8 @@ if __name__ == "__main__":
     # 配置选择：根据你的需求选择一个配置
     # ========================================================================
 
-    # 配置1：原始参数 + 不使用 args 特征（最安全，恢复到修复前状态）
-    USE_CONFIG = 1
+    # 配置6：智能 args 过滤（新增！排除 pathname, flags 等高基数特征）
+    USE_CONFIG = 6
 
     if USE_CONFIG == 1:
         print("配置1：原始参数 + 不使用 args 特征（恢复到修复前）")
@@ -1061,6 +1111,25 @@ if __name__ == "__main__":
             'n_jobs': 4,
             'process_args': "topk",
             'args_top_k': 2,  # ⭐ 只用 Top-2 参数
+            'exclude_weak': True,
+        }
+
+    elif USE_CONFIG == 6:
+        print("配置6：智能 args 过滤 + 优化参数（推荐）⭐")
+        print("  - 自动排除: pathname, flags 等高基数特征")
+        print("  - 基数过滤: 排除 >70% 唯一值的特征")
+        print("  - max_depth=10, n_estimators=50, args_top_k=5")
+        print("  - 内存: 优化后应该可以运行")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 50,
+            'max_depth': 10,
+            'max_samples': 0.7,
+            'n_jobs': 2,
+            'process_args': "topk",  # 现在包含智能过滤
+            'args_top_k': 5,  # 智能过滤后选择 Top-5
             'exclude_weak': True,
         }
 
