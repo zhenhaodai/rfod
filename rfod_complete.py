@@ -1046,8 +1046,8 @@ if __name__ == "__main__":
     # 配置选择：根据你的需求选择一个配置
     # ========================================================================
 
-    # 配置6：智能 args 过滤（新增！排除 pathname, flags 等高基数特征）
-    USE_CONFIG = 6
+    # 配置7：只依赖智能过滤（推荐！根本解决内存问题）
+    USE_CONFIG = 7
 
     if USE_CONFIG == 1:
         print("配置1：原始参数 + 不使用 args 特征（恢复到修复前）")
@@ -1140,21 +1140,41 @@ if __name__ == "__main__":
         }
 
     elif USE_CONFIG == 6:
-        print("配置6：智能 args 过滤 + 优化参数（推荐）⭐")
+        print("配置6：智能 args 过滤 + 保守参数（保守）")
         print("  - 自动排除: pathname, flags 等高基数特征")
         print("  - 基数过滤: 排除 >70% 唯一值的特征")
-        print("  - max_depth=10, n_estimators=50, args_top_k=5")
-        print("  - 内存: 优化后应该可以运行")
+        print("  - max_depth=10, n_estimators=50, max_samples=0.7")
+        print("  - 内存: 双重降级（过于保守）")
         config = {
             'batch_size': 10000,
             'alpha': 0.005,
             'beta': 0.7,
             'n_estimators': 50,
             'max_depth': 10,
-            'max_samples': 0.7,
+            'max_samples': 0.7,  # 过于保守
             'n_jobs': 2,
-            'process_args': "topk",  # 现在包含智能过滤
-            'args_top_k': 5,  # 智能过滤后选择 Top-5
+            'process_args': "topk",
+            'args_top_k': 5,
+            'exclude_weak': True,
+        }
+
+    elif USE_CONFIG == 7:
+        print("配置7：只依赖智能 args 过滤（推荐）⭐⭐")
+        print("  - 自动排除: pathname, flags 等高基数特征")
+        print("  - 基数过滤: 排除 >70% 唯一值的特征")
+        print("  - max_samples=None (使用全部样本)")
+        print("  - 根本解决内存问题，不需要样本降级")
+        print("  - 性能最优：更深的树 + 更多样本")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 60,
+            'max_depth': 12,           # ⭐ 提高深度（基数过滤后可以）
+            'max_samples': None,       # ⭐ 不需要采样
+            'n_jobs': 2,
+            'process_args': "topk",
+            'args_top_k': 5,
             'exclude_weak': True,
         }
 
