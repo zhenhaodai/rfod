@@ -568,6 +568,13 @@ class RFOD:
         if isinstance(X, np.ndarray):
             X = pd.DataFrame(X, columns=self.feature_names_)
 
+        # Backward compatibility: if model was trained with old version (no feature filtering)
+        if not hasattr(self, 'predictable_features_'):
+            self.predictable_features_ = list(range(self.n_features_))
+            self.excluded_features_ = []
+            if self.verbose:
+                print("Warning: Using old model format. All features will be used.")
+
         n_samples = len(X)
         if self.verbose:
             print(f"Predicting {n_samples} samples (batch_size={batch_size})")
