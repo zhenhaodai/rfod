@@ -184,13 +184,14 @@ def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int
             if isinstance(arg, dict) and arg.get("name") in top_names:
                 topk_features[f'arg_{arg["name"]}'] = arg.get("value")
 
-        # Statistical features (based on research categories)
+        # Statistical features
+        # Note: argsNum already exists in BASE_FEATURES (total arg count)
+        # We only add unique information here
         stats_features = {
-            'args_count': len(parsed),
-            'args_int_count': sum(1 for a in parsed if isinstance(a, dict) and a.get('type') == 'int'),
-            'args_str_count': sum(1 for a in parsed if isinstance(a, dict) and a.get('type') == 'string'),
-            'args_ptr_count': sum(1 for a in parsed if isinstance(a, dict) and ('ptr' in str(a.get('type', '')) or '*' in str(a.get('type', '')))),
+            # 'args_count': len(parsed),  # Removed: redundant with argsNum
+            # Type counts removed: provide little value in syscall context and cause multicollinearity
             'args_unique_names': len(set(a.get('name') for a in parsed if isinstance(a, dict) and 'name' in a))
+            # Diversity of argument names (independent information from argsNum)
         }
 
         features_list.append({**topk_features, **stats_features})
@@ -198,23 +199,23 @@ def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int
     args_df = pd.DataFrame(features_list)
     df = pd.concat([df.reset_index(drop=True), args_df.reset_index(drop=True)], axis=1)
 
-    print(f"Args processed: {len(top_names)} Top-K features + 5 statistics = {len(args_df.columns)} new features")
+    n_stats = len(stats_features)
+    print(f"Args processed: {len(top_names)} Top-K features + {n_stats} statistic(s) = {len(args_df.columns)} new features")
     return df, top_names
 
 
 def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
     """
     Convert dtypes:
-    - Numeric: timestamp, argsNum, stack_depth, args_*count features
+    - Numeric: timestamp, argsNum, stack_depth, args_* statistic features
     - Categorical: all others (except 'args' column if still present)
     """
     # Base numeric columns
     numeric_cols = ["timestamp", "argsNum", "stack_depth"]
 
-    # Add args statistics features (these are all numeric)
-    args_stat_cols = [col for col in df.columns if col.startswith('args_') and
-                      col in ['args_count', 'args_int_count', 'args_str_count',
-                              'args_ptr_count', 'args_unique_names']]
+    # Add args statistics features (all args_* features are numeric)
+    # Note: arg_* (Top-K argument values) are categorical, args_* (statistics) are numeric
+    args_stat_cols = [col for col in df.columns if col.startswith('args_')]
     numeric_cols.extend(args_stat_cols)
 
     # Convert types
@@ -1069,7 +1070,7 @@ if __name__ == "__main__":
 
     elif USE_CONFIG == 2:
         print("配置2：降低深度 + 使用 args 特征（推荐平衡）")
-        print("  - 特征数: ~19 (args_top_k=5)")
+        print("  - 特征数: ~17 (args_top_k=5 + 1 stat)")
         print("  - max_depth=12, n_estimators=50")
         print("  - 内存: 适中")
         config = {
@@ -1087,7 +1088,7 @@ if __name__ == "__main__":
 
     elif USE_CONFIG == 3:
         print("配置3：使用 max_samples + 保持原始参数")
-        print("  - 特征数: ~19 (args_top_k=5)")
+        print("  - 特征数: ~17 (args_top_k=5 + 1 stat)")
         print("  - max_depth=20, n_estimators=80, max_samples=0.5")
         print("  - 内存: 通过采样降低")
         config = {
@@ -1105,7 +1106,7 @@ if __name__ == "__main__":
 
     elif USE_CONFIG == 4:
         print("配置4：内存优化（8GB RAM）")
-        print("  - 特征数: ~14 (args_top_k=2, 降低)")
+        print("  - 特征数: ~13 (args_top_k=2 + 1 stat)")
         print("  - max_depth=10, n_estimators=40, max_samples=0.7")
         print("  - 内存: 最低")
         config = {
@@ -1123,7 +1124,7 @@ if __name__ == "__main__":
 
     elif USE_CONFIG == 5:
         print("配置5：原始参数 + 降低 args_top_k（辅助优化）")
-        print("  - 特征数: ~14 (args_top_k=2, 降低)")
+        print("  - 特征数: ~13 (args_top_k=2 + 1 stat)")
         print("  - max_depth=20, n_estimators=80")
         print("  - 内存: 略微降低（不能根本解决）")
         config = {
@@ -1143,6 +1144,7 @@ if __name__ == "__main__":
         print("配置6：智能 args 过滤 + 保守参数（保守）")
         print("  - 自动排除: pathname, flags 等高基数特征")
         print("  - 基数过滤: 排除 >70% 唯一值的特征")
+        print("  - 特征数: ~17 (args_top_k=5 + 1 stat)")
         print("  - max_depth=10, n_estimators=50, max_samples=0.7")
         print("  - 内存: 双重降级（过于保守）")
         config = {
@@ -1159,18 +1161,19 @@ if __name__ == "__main__":
         }
 
     elif USE_CONFIG == 7:
-        print("配置7：只依赖智能 args 过滤（推荐）⭐⭐")
+        print("配置7：智能过滤 + 精简统计特征（推荐）⭐⭐")
         print("  - 自动排除: pathname, flags 等高基数特征")
         print("  - 基数过滤: 排除 >70% 唯一值的特征")
+        print("  - 精简统计: 只保留 args_unique_names（去除冗余）")
+        print("  - 特征数: ~17 (11 base + 5 arg + 1 stat)")
         print("  - max_samples=None (使用全部样本)")
-        print("  - 根本解决内存问题，不需要样本降级")
-        print("  - 性能最优：更深的树 + 更多样本")
+        print("  - 根本解决内存问题，性能最优")
         config = {
             'batch_size': 10000,
             'alpha': 0.005,
             'beta': 0.7,
             'n_estimators': 60,
-            'max_depth': 12,           # ⭐ 提高深度（基数过滤后可以）
+            'max_depth': 12,           # ⭐ 提高深度（特征过滤后可以）
             'max_samples': None,       # ⭐ 不需要采样
             'n_jobs': 2,
             'process_args': "topk",
