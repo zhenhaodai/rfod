@@ -77,10 +77,21 @@ def extract_arg_features(df: pd.DataFrame, args_col: str = "args") -> pd.DataFra
     return df
 
 
-def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int = 5) -> pd.DataFrame:
+def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int = 5,
+                             fixed_args: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List[str]]:
     """
     Extract Top-K most frequent args + statistics (recommended by research)
     Based on: "On Improving Deep Learning Trace Analysis with System Call Arguments" (IEEE 2021)
+
+    Args:
+        df: Input DataFrame
+        args_col: Name of args column
+        top_k: Number of top args to select (ignored if fixed_args is provided)
+        fixed_args: If provided, use these exact arg names instead of computing Top-K
+                   (CRITICAL for test data to match training data)
+
+    Returns:
+        Tuple of (processed_df, selected_arg_names)
 
     Strategy:
     1. Find Top-K most frequent argument names (excluding high-cardinality features)
@@ -95,66 +106,72 @@ def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int
     """
     if args_col not in df.columns:
         print(f"Warning: '{args_col}' column not found, skipping args extraction")
-        return df
+        return df, []
 
-    # Args to exclude (high cardinality, unpredictable, or path-like)
-    EXCLUDE_ARG_NAMES = {
-        # Path-related (very high cardinality)
-        'pathname', 'filename', 'path', 'dirfd', 'oldname', 'newname',
-        'name', 'buf', 'buffer',
-        # Flags and modes (often hex, high cardinality)
-        'flags', 'mode', 'prot', 'whence',
-        # Pointers and addresses (random values)
-        'addr', 'ptr', 'address',
-        # Large strings (command lines, environment)
-        'cmd', 'argv', 'envp', 'data',
-    }
+    # If fixed_args provided (test/inference mode), use them directly
+    if fixed_args is not None:
+        top_names = fixed_args
+        print(f"Using fixed args (inference mode): {top_names}")
+    else:
+        # Training mode: compute Top-K with intelligent filtering
+        # Args to exclude (high cardinality, unpredictable, or path-like)
+        EXCLUDE_ARG_NAMES = {
+            # Path-related (very high cardinality)
+            'pathname', 'filename', 'path', 'dirfd', 'oldname', 'newname',
+            'name', 'buf', 'buffer',
+            # Flags and modes (often hex, high cardinality)
+            'flags', 'mode', 'prot', 'whence',
+            # Pointers and addresses (random values)
+            'addr', 'ptr', 'address',
+            # Large strings (command lines, environment)
+            'cmd', 'argv', 'envp', 'data',
+        }
 
-    # Step 1: Count argument name frequencies with intelligent filtering
-    arg_freq = {}
-    arg_cardinality = {}  # Track unique values to detect high cardinality
+        # Step 1: Count argument name frequencies with intelligent filtering
+        arg_freq = {}
+        arg_cardinality = {}  # Track unique values to detect high cardinality
 
-    for args_str in df[args_col]:
-        for arg in parse_list_field(args_str):
-            if isinstance(arg, dict) and "name" in arg:
-                name = arg.get("name")
+        for args_str in df[args_col]:
+            for arg in parse_list_field(args_str):
+                if isinstance(arg, dict) and "name" in arg:
+                    name = arg.get("name")
 
-                # Skip excluded arg names
-                if name in EXCLUDE_ARG_NAMES:
-                    continue
+                    # Skip excluded arg names
+                    if name in EXCLUDE_ARG_NAMES:
+                        continue
 
-                # Skip args with 'ptr' or 'addr' in the name (pointers)
-                if 'ptr' in name.lower() or 'addr' in name.lower():
-                    continue
+                    # Skip args with 'ptr' or 'addr' in the name (pointers)
+                    if 'ptr' in name.lower() or 'addr' in name.lower():
+                        continue
 
-                # Count frequency
-                arg_freq[name] = arg_freq.get(name, 0) + 1
+                    # Count frequency
+                    arg_freq[name] = arg_freq.get(name, 0) + 1
 
-                # Track unique values for cardinality check
-                value = str(arg.get("value", ""))
-                if name not in arg_cardinality:
-                    arg_cardinality[name] = set()
-                arg_cardinality[name].add(value)
+                    # Track unique values for cardinality check
+                    value = str(arg.get("value", ""))
+                    if name not in arg_cardinality:
+                        arg_cardinality[name] = set()
+                    arg_cardinality[name].add(value)
 
-    # Step 2: Filter out high-cardinality features
-    # If an arg has too many unique values, it's likely not predictable
-    max_cardinality_ratio = 0.7  # If >70% unique, exclude it
-    filtered_args = {}
-    for name, freq in arg_freq.items():
-        cardinality = len(arg_cardinality[name])
-        cardinality_ratio = cardinality / freq
+        # Step 2: Filter out high-cardinality features
+        # If an arg has too many unique values, it's likely not predictable
+        max_cardinality_ratio = 0.7  # If >70% unique, exclude it
+        filtered_args = {}
+        for name, freq in arg_freq.items():
+            cardinality = len(arg_cardinality[name])
+            cardinality_ratio = cardinality / freq
 
-        if cardinality_ratio < max_cardinality_ratio:
-            filtered_args[name] = freq
-        else:
-            print(f"  Excluding '{name}': high cardinality ({cardinality}/{freq} = {cardinality_ratio:.2%} unique)")
+            if cardinality_ratio < max_cardinality_ratio:
+                filtered_args[name] = freq
+            else:
+                print(f"  Excluding '{name}': high cardinality ({cardinality}/{freq} = {cardinality_ratio:.2%} unique)")
 
-    # Step 3: Select Top-K from filtered args
-    top_args = sorted(filtered_args.items(), key=lambda x: x[1], reverse=True)[:top_k]
-    top_names = [name for name, count in top_args]
+        # Step 3: Select Top-K from filtered args
+        top_args = sorted(filtered_args.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        top_names = [name for name, count in top_args]
 
-    if top_names:
-        print(f"Top-{top_k} args (after intelligent filtering): {top_names}")
+        if top_names:
+            print(f"Top-{top_k} args (after intelligent filtering): {top_names}")
 
     # Step 4: Extract features for each row
     features_list = []
@@ -182,7 +199,7 @@ def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int
     df = pd.concat([df.reset_index(drop=True), args_df.reset_index(drop=True)], axis=1)
 
     print(f"Args processed: {len(top_names)} Top-K features + 5 statistics = {len(args_df.columns)} new features")
-    return df
+    return df, top_names
 
 
 def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
@@ -214,7 +231,7 @@ def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] = "topk",
-              args_top_k: int = 5, save: bool = True):
+              args_top_k: int = 5, save: bool = True, fixed_args: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List[str]]:
     """
     Main data cleaning function
 
@@ -226,9 +243,14 @@ def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] 
         args_top_k: Number of top frequent args to extract (default: 5)
             - Smaller value = fewer features = less memory
             - Recommended: 2-5 for 8GB RAM, 5-10 for 16GB+ RAM
+        fixed_args: If provided, use these exact arg names (for test/inference consistency)
+
+    Returns:
+        Tuple of (cleaned_df, selected_arg_names)
     """
     print(f"Processing: {input_path}")
     df = pd.read_csv(input_path)
+    selected_arg_names = []
 
     if "stackAddresses" in df.columns:
         df["stackAddresses"] = df["stackAddresses"].apply(parse_list_field)
@@ -252,7 +274,7 @@ def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] 
         df = extract_arg_features(df, args_col="args")
         df = df.drop(columns=["args"], errors="ignore")
     elif process_args in ["topk", "smart"]:
-        df = extract_args_topk_stats(df, args_col="args", top_k=args_top_k)
+        df, selected_arg_names = extract_args_topk_stats(df, args_col="args", top_k=args_top_k, fixed_args=fixed_args)
         df = df.drop(columns=["args"], errors="ignore")
     else:
         raise ValueError(f"Unknown process_args value: {process_args}. Use False, True, 'full', 'topk', or 'smart'")
@@ -269,7 +291,7 @@ def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] 
     if save:
         df.to_csv(output_path, index=False)
         print(f"Cleaned data saved to: {output_path}")
-    return df
+    return df, selected_arg_names
 
 
 # ============================================================================
@@ -791,11 +813,11 @@ def _get_predictable_features(feature_cols: List[str],
 
 
 def _safe_clean_csv(input_path: str, process_args: Union[bool, str] = "topk",
-                    args_top_k: int = 5) -> pd.DataFrame:
+                    args_top_k: int = 5, fixed_args: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List[str]]:
     tmp_out = os.path.join(tempfile.gettempdir(), f"cleaned_{os.path.basename(input_path)}")
-    df = clean_csv(input_path, tmp_out, process_args=process_args,
-                   args_top_k=args_top_k, save=False)
-    return df
+    df, selected_arg_names = clean_csv(input_path, tmp_out, process_args=process_args,
+                                        args_top_k=args_top_k, save=False, fixed_args=fixed_args)
+    return df, selected_arg_names
 
 
 def _select_and_align_features(df: pd.DataFrame, feature_names: List[str]) -> pd.DataFrame:
@@ -852,7 +874,7 @@ def train_and_infer(
     if not os.path.exists(train_csv):
         raise FileNotFoundError(f"Train file not found: {train_csv}")
 
-    df_train = _safe_clean_csv(train_csv, process_args=process_args, args_top_k=args_top_k)
+    df_train, selected_arg_names = _safe_clean_csv(train_csv, process_args=process_args, args_top_k=args_top_k)
     if df_train.empty:
         raise ValueError(f"Failed to load train data: {train_csv}")
 
@@ -912,6 +934,7 @@ def train_and_infer(
         'model': rfod,
         'params': params,
         'feature_cols': feature_cols,  # Save feature list for inference consistency
+        'selected_arg_names': selected_arg_names,  # Save arg names for test consistency
         'saved_at': datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -933,7 +956,9 @@ def train_and_infer(
         if not os.path.exists(test_csv):
             raise FileNotFoundError(f"Test file not found: {test_csv}")
 
-        df_test = _safe_clean_csv(test_csv, process_args=process_args, args_top_k=args_top_k)
+        # CRITICAL: Use the same arg names as training for consistency
+        df_test, _ = _safe_clean_csv(test_csv, process_args=process_args, args_top_k=args_top_k,
+                                      fixed_args=selected_arg_names)
 
         if 'Id' not in df_test.columns:
             raise ValueError("Test set must contain 'Id' column")
