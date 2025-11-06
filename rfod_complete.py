@@ -163,7 +163,8 @@ def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] = "topk", save: bool = True):
+def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] = "topk",
+              args_top_k: int = 5, save: bool = True):
     """
     Main data cleaning function
 
@@ -172,6 +173,9 @@ def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] 
             - False: Drop args completely (no processing)
             - True or "full": Full expansion (causes 100+ features - NOT RECOMMENDED)
             - "topk" or "smart": Top-K + statistics (RECOMMENDED, 10-15 features)
+        args_top_k: Number of top frequent args to extract (default: 5)
+            - Smaller value = fewer features = less memory
+            - Recommended: 2-5 for 8GB RAM, 5-10 for 16GB+ RAM
     """
     print(f"Processing: {input_path}")
     df = pd.read_csv(input_path)
@@ -198,7 +202,7 @@ def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] 
         df = extract_arg_features(df, args_col="args")
         df = df.drop(columns=["args"], errors="ignore")
     elif process_args in ["topk", "smart"]:
-        df = extract_args_topk_stats(df, args_col="args", top_k=5)
+        df = extract_args_topk_stats(df, args_col="args", top_k=args_top_k)
         df = df.drop(columns=["args"], errors="ignore")
     else:
         raise ValueError(f"Unknown process_args value: {process_args}. Use False, True, 'full', 'topk', or 'smart'")
@@ -728,9 +732,11 @@ def _get_predictable_features(feature_cols: List[str],
     return predictable, excluded
 
 
-def _safe_clean_csv(input_path: str, process_args: Union[bool, str] = "topk") -> pd.DataFrame:
+def _safe_clean_csv(input_path: str, process_args: Union[bool, str] = "topk",
+                    args_top_k: int = 5) -> pd.DataFrame:
     tmp_out = os.path.join(tempfile.gettempdir(), f"cleaned_{os.path.basename(input_path)}")
-    df = clean_csv(input_path, tmp_out, process_args=process_args, save=False)
+    df = clean_csv(input_path, tmp_out, process_args=process_args,
+                   args_top_k=args_top_k, save=False)
     return df
 
 
@@ -766,10 +772,11 @@ def train_and_infer(
     beta: float = 0.7,
     n_estimators: int = 30,
     max_depth: int = 6,
-    max_samples: Optional[Union[int, float]] = None,  # NEW: memory optimization
+    max_samples: Optional[Union[int, float]] = None,
     random_state: int = 42,
     n_jobs: int = -1,
     process_args: Union[bool, str] = "topk",
+    args_top_k: int = 5,  # NEW: control number of top args features
     drop_labelled_anomalies: bool = False,
     normalize_method: str = "minmax",
     out_dir: str = "model",
@@ -787,7 +794,7 @@ def train_and_infer(
     if not os.path.exists(train_csv):
         raise FileNotFoundError(f"Train file not found: {train_csv}")
 
-    df_train = _safe_clean_csv(train_csv, process_args=process_args)
+    df_train = _safe_clean_csv(train_csv, process_args=process_args, args_top_k=args_top_k)
     if df_train.empty:
         raise ValueError(f"Failed to load train data: {train_csv}")
 
@@ -868,7 +875,7 @@ def train_and_infer(
         if not os.path.exists(test_csv):
             raise FileNotFoundError(f"Test file not found: {test_csv}")
 
-        df_test = _safe_clean_csv(test_csv, process_args=process_args)
+        df_test = _safe_clean_csv(test_csv, process_args=process_args, args_top_k=args_top_k)
 
         if 'Id' not in df_test.columns:
             raise ValueError("Test set must contain 'Id' column")
@@ -961,9 +968,9 @@ if __name__ == "__main__":
 
     if USE_CONFIG == 1:
         print("配置1：原始参数 + 不使用 args 特征（恢复到修复前）")
-        print("  - 特征数: ~11 (不包含 args)")
+        print("  - 特征数: ~9 (不包含 args)")
         print("  - max_depth=20, n_estimators=80")
-        print("  - 内存: 与之前相同")
+        print("  - 内存: 与之前相同 ✅")
         config = {
             'batch_size': 10000,
             'alpha': 0.005,
@@ -973,12 +980,13 @@ if __name__ == "__main__":
             'max_samples': None,
             'n_jobs': 4,
             'process_args': False,  # ⭐ 关键：不使用 args 特征
+            'args_top_k': 0,  # 不使用 args
             'exclude_weak': True,
         }
 
     elif USE_CONFIG == 2:
         print("配置2：降低深度 + 使用 args 特征（推荐平衡）")
-        print("  - 特征数: ~19 (包含 args)")
+        print("  - 特征数: ~19 (args_top_k=5)")
         print("  - max_depth=12, n_estimators=50")
         print("  - 内存: 适中")
         config = {
@@ -990,12 +998,13 @@ if __name__ == "__main__":
             'max_samples': None,
             'n_jobs': 4,
             'process_args': "topk",  # 使用 args
+            'args_top_k': 5,  # Top-5 参数特征
             'exclude_weak': True,
         }
 
     elif USE_CONFIG == 3:
         print("配置3：使用 max_samples + 保持原始参数")
-        print("  - 特征数: ~19 (包含 args)")
+        print("  - 特征数: ~19 (args_top_k=5)")
         print("  - max_depth=20, n_estimators=80, max_samples=0.5")
         print("  - 内存: 通过采样降低")
         config = {
@@ -1007,23 +1016,43 @@ if __name__ == "__main__":
             'max_samples': 0.5,  # ⭐ 每棵树只用 50% 样本
             'n_jobs': 4,
             'process_args': "topk",
+            'args_top_k': 5,
             'exclude_weak': True,
         }
 
     elif USE_CONFIG == 4:
         print("配置4：内存优化（8GB RAM）")
-        print("  - 特征数: ~19 (包含 args)")
-        print("  - max_depth=8, n_estimators=30, max_samples=0.7")
+        print("  - 特征数: ~14 (args_top_k=2, 降低)")
+        print("  - max_depth=10, n_estimators=40, max_samples=0.7")
         print("  - 内存: 最低")
         config = {
             'batch_size': 10000,
             'alpha': 0.005,
             'beta': 0.7,
-            'n_estimators': 30,
-            'max_depth': 8,
+            'n_estimators': 40,
+            'max_depth': 10,  # ⭐ 适中深度
             'max_samples': 0.7,
             'n_jobs': 2,
             'process_args': "topk",
+            'args_top_k': 2,  # ⭐ 只用 Top-2 参数（减少特征）
+            'exclude_weak': True,
+        }
+
+    elif USE_CONFIG == 5:
+        print("配置5：原始参数 + 降低 args_top_k（辅助优化）")
+        print("  - 特征数: ~14 (args_top_k=2, 降低)")
+        print("  - max_depth=20, n_estimators=80")
+        print("  - 内存: 略微降低（不能根本解决）")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 80,
+            'max_depth': 20,
+            'max_samples': None,
+            'n_jobs': 4,
+            'process_args': "topk",
+            'args_top_k': 2,  # ⭐ 只用 Top-2 参数
             'exclude_weak': True,
         }
 
@@ -1044,6 +1073,7 @@ if __name__ == "__main__":
         n_jobs=config['n_jobs'],
 
         process_args=config['process_args'],
+        args_top_k=config['args_top_k'],  # NEW: 控制 args 特征数量
         drop_labelled_anomalies=False,
         exclude_weak=config['exclude_weak'],
 
