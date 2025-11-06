@@ -951,11 +951,82 @@ if __name__ == "__main__":
     print("="*70)
     print("RFOD Training and Inference")
     print("="*70)
-    print("Configuration:")
-    print("  - Memory: 8GB RAM (optimized)")
-    print("  - Args processing: Top-K + Statistics (research-based)")
-    print("  - Feature selection: Causal dependency analysis")
-    print("  - Memory optimization: max_depth=8, max_samples=0.7")
+
+    # ========================================================================
+    # 配置选择：根据你的需求选择一个配置
+    # ========================================================================
+
+    # 配置1：原始参数 + 不使用 args 特征（最安全，恢复到修复前状态）
+    USE_CONFIG = 1
+
+    if USE_CONFIG == 1:
+        print("配置1：原始参数 + 不使用 args 特征（恢复到修复前）")
+        print("  - 特征数: ~11 (不包含 args)")
+        print("  - max_depth=20, n_estimators=80")
+        print("  - 内存: 与之前相同")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 80,
+            'max_depth': 20,
+            'max_samples': None,
+            'n_jobs': 4,
+            'process_args': False,  # ⭐ 关键：不使用 args 特征
+            'exclude_weak': True,
+        }
+
+    elif USE_CONFIG == 2:
+        print("配置2：降低深度 + 使用 args 特征（推荐平衡）")
+        print("  - 特征数: ~19 (包含 args)")
+        print("  - max_depth=12, n_estimators=50")
+        print("  - 内存: 适中")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 50,
+            'max_depth': 12,  # ⭐ 降低深度
+            'max_samples': None,
+            'n_jobs': 4,
+            'process_args': "topk",  # 使用 args
+            'exclude_weak': True,
+        }
+
+    elif USE_CONFIG == 3:
+        print("配置3：使用 max_samples + 保持原始参数")
+        print("  - 特征数: ~19 (包含 args)")
+        print("  - max_depth=20, n_estimators=80, max_samples=0.5")
+        print("  - 内存: 通过采样降低")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 80,
+            'max_depth': 20,
+            'max_samples': 0.5,  # ⭐ 每棵树只用 50% 样本
+            'n_jobs': 4,
+            'process_args': "topk",
+            'exclude_weak': True,
+        }
+
+    elif USE_CONFIG == 4:
+        print("配置4：内存优化（8GB RAM）")
+        print("  - 特征数: ~19 (包含 args)")
+        print("  - max_depth=8, n_estimators=30, max_samples=0.7")
+        print("  - 内存: 最低")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 30,
+            'max_depth': 8,
+            'max_samples': 0.7,
+            'n_jobs': 2,
+            'process_args': "topk",
+            'exclude_weak': True,
+        }
+
     print("="*70 + "\n")
 
     results = train_and_infer(
@@ -963,30 +1034,23 @@ if __name__ == "__main__":
         test_csv="data/processes_test.csv",
         output_path="result/submission.csv",
 
-        # Memory-optimized parameters for 8GB RAM
-        batch_size=10000,
-        alpha=0.005,
-        beta=0.7,
-        n_estimators=30,        # Reduced from 80 (saves memory)
-        max_depth=8,            # Reduced from 20 (CRITICAL for memory)
-        max_samples=0.7,        # NEW: Use 70% samples per tree (saves memory)
+        batch_size=config['batch_size'],
+        alpha=config['alpha'],
+        beta=config['beta'],
+        n_estimators=config['n_estimators'],
+        max_depth=config['max_depth'],
+        max_samples=config['max_samples'],
         random_state=42,
-        n_jobs=2,               # Reduced from 4 (each job uses memory)
+        n_jobs=config['n_jobs'],
 
-        process_args="topk",
+        process_args=config['process_args'],
         drop_labelled_anomalies=False,
-        exclude_weak=True,
+        exclude_weak=config['exclude_weak'],
 
         normalize_method="minmax",
         out_dir="model",
         verbose=True
     )
-
-    # For higher memory systems (16GB+), use these settings:
-    # n_estimators=50, max_depth=10, max_samples=0.8, n_jobs=4
-
-    # For very large datasets or low memory (4GB), use:
-    # n_estimators=20, max_depth=6, max_samples=0.5, n_jobs=1
 
     print(f"\nModel saved: {results.get('model_path')}")
     if 'output_path' in results:
