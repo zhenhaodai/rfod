@@ -522,7 +522,8 @@ class RFOD:
         n_samples = len(X)
         cell_scores = np.zeros((n_samples, self.n_features_))
 
-        for feature_idx in range(self.n_features_):
+        # Only compute scores for features that have predictions (predictable features)
+        for feature_idx in predictions.keys():
             true_values_series = X.iloc[:, feature_idx]
             pred_values = predictions[feature_idx]
 
