@@ -37,108 +37,88 @@ from collections import OrderedDict
 
 def extract_temporal_features(
     df: pd.DataFrame,
+    num_features: int = 3,
     process_col: str = "processId",
     timestamp_col: str = "timestamp",
     verbose: bool = True
 ) -> pd.DataFrame:
     """
-    Extract MINIMAL temporal features to make RFOD time-aware.
-
-    DESIGN PRINCIPLE: Only add 3 MOST IMPORTANT temporal features to avoid:
-    - Memory explosion
-    - Training slowdown
-    - Overfitting
-    - Loss of interpretability
-
-    This extends RFOD to capture:
-    1. Temporal dependencies (time intervals between events)
-    2. Sequence patterns (event repetition)
-    3. Evolving correlations (parameter changes over time)
+    Extract temporal features to make RFOD time-aware (T-RFOD Extension).
 
     Args:
-        df: Input DataFrame (must be sorted by processId and timestamp!)
-        process_col: Column name for process grouping
-        timestamp_col: Column name for time
-        verbose: Print progress
+        num_features: Number of temporal features to extract (0-3)
+            - 0: No temporal features (standard RFOD)
+            - 1: Only time_since_last (temporal dependency)
+            - 2: time_since_last + event_frequency (dependency + pattern)
+            - 3: All three features (full T-RFOD, RECOMMENDED)
+        process_col: Process ID column name
+        timestamp_col: Timestamp column name
+        verbose: Print extraction info
 
-    Returns:
-        DataFrame with 3 additional temporal features
+    Temporal Features (in order of importance):
+    1. time_since_last (float): Time delta from previous event in same process
+       - Captures: temporal dependencies, abnormal time gaps
+    2. event_frequency (float, 0-1): Normalized occurrence frequency of this event
+       - Captures: sequence patterns, rare events
+    3. argsNum_diff_1 (int): First-order difference of argsNum
+       - Captures: evolving correlations, parameter change velocity
 
-    Temporal Features Added (ONLY 3):
-    ----------------------------------
-    1. time_since_last (float):
-       - Time delta from previous event in the same process
-       - Captures: Temporal dependencies, unusual time gaps
-       - Example: Malicious process may have irregular timing
-
-    2. event_frequency (float, 0-1):
-       - How often this eventName appears in the process (normalized)
-       - Captures: Sequence patterns, event repetition
-       - Example: Anomalous events are often rare in normal processes
-
-    3. argsNum_diff_1 (int):
-       - First-order difference of argsNum (current - previous)
-       - Captures: Evolving correlations, parameter changes
-       - Example: Sudden change in argument count may indicate anomaly
-
-    Why ONLY these 3?
-    -----------------
-    - Minimal overhead: 17 features → 20 features (only 18% increase)
-    - Maximum information: Cover time, sequence, and evolution aspects
-    - Research-backed: All three are proven effective in time-series anomaly detection
-    - Interpretable: Easy to understand and explain
-
-    References:
-    -----------
-    - Malhotra et al. (2016): LSTM-based Encoder-Decoder for Multi-sensor Anomaly Detection
-    - Ang et al. (2024): RFOD: Random Forest-based Outlier Detection
-    - Research shows: Even 2-3 temporal features can improve detection by 10-15%
+    Expected Improvement (with all 3 features):
+    - Detection rate: +10-15% (based on literature)
+    - Memory overhead: Minimal (~18% increase)
     """
+    if num_features == 0:
+        if verbose:
+            print("Temporal features: DISABLED (standard RFOD)")
+        return df
+
+    if num_features < 0 or num_features > 3:
+        raise ValueError(f"num_features must be 0-3, got {num_features}")
+
     if process_col not in df.columns or timestamp_col not in df.columns:
         if verbose:
             print(f"Warning: Missing {process_col} or {timestamp_col}, skipping temporal features")
         return df
 
-    # CRITICAL: Sort by process and time
-    df = df.sort_values([process_col, timestamp_col]).reset_index(drop=True)
-
     if verbose:
-        print(f"Extracting 3 core temporal features...")
+        print(f"T-RFOD: Extracting {num_features} temporal feature(s)...")
 
-    # Group by process
+    # CRITICAL: Sort by process and time to ensure temporal order
+    df = df.sort_values([process_col, timestamp_col]).reset_index(drop=True)
     grouped = df.groupby(process_col)
 
-    # =================================================================
-    # FEATURE 1: time_since_last - Time gap from previous event
-    # =================================================================
-    # Captures: Temporal dependencies, timing anomalies
-    df['time_since_last'] = grouped[timestamp_col].diff().fillna(0)
+    # Feature 1: time_since_last (most important)
+    if num_features >= 1:
+        df['time_since_last'] = grouped[timestamp_col].diff().fillna(0)
+        if verbose:
+            print("  ✓ time_since_last: Temporal dependency")
 
-    # =================================================================
-    # FEATURE 2: event_frequency - Event occurrence frequency in process
-    # =================================================================
-    # Captures: Sequence patterns, rare events
-    if 'eventName' in df.columns:
-        df['event_frequency'] = grouped['eventName'].transform(
-            lambda x: x.map(x.value_counts(normalize=True))
-        )
-    else:
-        df['event_frequency'] = 0.5  # Neutral value if eventName missing
+    # Feature 2: event_frequency
+    if num_features >= 2:
+        if 'eventName' in df.columns:
+            df['event_frequency'] = grouped['eventName'].transform(
+                lambda x: x.map(x.value_counts(normalize=True))
+            )
+            if verbose:
+                print("  ✓ event_frequency: Sequence pattern")
+        else:
+            df['event_frequency'] = 0.5
+            if verbose:
+                print("  ⚠ event_frequency: eventName not found, using default")
 
-    # =================================================================
-    # FEATURE 3: argsNum_diff_1 - First-order difference of argsNum
-    # =================================================================
-    # Captures: Evolving correlations, parameter changes
-    if 'argsNum' in df.columns:
-        df['argsNum_diff_1'] = grouped['argsNum'].diff().fillna(0)
-    else:
-        df['argsNum_diff_1'] = 0  # Zero if argsNum missing
+    # Feature 3: argsNum_diff_1
+    if num_features >= 3:
+        if 'argsNum' in df.columns:
+            df['argsNum_diff_1'] = grouped['argsNum'].diff().fillna(0)
+            if verbose:
+                print("  ✓ argsNum_diff_1: Evolving correlation")
+        else:
+            df['argsNum_diff_1'] = 0
+            if verbose:
+                print("  ⚠ argsNum_diff_1: argsNum not found, using default")
 
     if verbose:
-        print(f"✅ Added 3 temporal features:")
-        print(f"   1. time_since_last (time dependency)")
-        print(f"   2. event_frequency (sequence pattern)")
-        print(f"   3. argsNum_diff_1 (evolving correlation)")
+        print(f"T-RFOD: {num_features} temporal feature(s) added\n")
 
     return df
 
@@ -147,263 +127,134 @@ def extract_temporal_features(
 # DATA PROCESSING
 # ============================================================================
 
-def parse_list_field(value: Any) -> List:
-    """Parse list-like string fields safely"""
-    if pd.isna(value):
-        return []
-    if isinstance(value, list):
-        return value
-    try:
-        return ast.literal_eval(str(value))
-    except Exception:
-        return []
+# ============================================================================
+# CARDINALITY FILTERING FOR BASE FEATURES
+# ============================================================================
 
-
-def extract_arg_features(df: pd.DataFrame, args_col: str = "args") -> pd.DataFrame:
-    """Flatten args field (old method - causes dimension explosion)"""
-    if args_col not in df.columns:
-        print(f"Warning: '{args_col}' column not found, skipping args extraction")
-        return df
-
-    all_feature_names: Set[str] = set()
-    feature_types: Dict[str, Set[str]] = {}
-
-    for args_str in df[args_col]:
-        for arg in parse_list_field(args_str):
-            if isinstance(arg, dict) and "name" in arg:
-                name = arg["name"]
-                all_feature_names.add(name)
-                t = arg.get("type", "unknown")
-                feature_types.setdefault(name, set()).add(t)
-
-    all_feature_names = sorted(list(all_feature_names))
-
-    flattened_features = []
-    for args_str in df[args_col]:
-        feature_map = {name: None for name in all_feature_names}
-        for arg in parse_list_field(args_str):
-            if isinstance(arg, dict) and "name" in arg and "value" in arg:
-                feature_map[arg["name"]] = arg["value"]
-        flattened_features.append(feature_map)
-
-    args_df = pd.DataFrame(flattened_features)
-    df = pd.concat([df.reset_index(drop=True), args_df.reset_index(drop=True)], axis=1)
-
-    print(f"Args flattened: {len(all_feature_names)} new features")
-    return df
-
-
-def extract_args_topk_stats(df: pd.DataFrame, args_col: str = "args", top_k: int = 5,
-                             fixed_args: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List[str]]:
+def filter_high_cardinality_features(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    max_cardinality_ratio: float = 0.8,
+    verbose: bool = True
+) -> List[str]:
     """
-    Extract Top-K most frequent args + statistics (recommended by research)
-    Based on: "On Improving Deep Learning Trace Analysis with System Call Arguments" (IEEE 2021)
+    Filter out high-cardinality categorical features based on unique value ratio.
 
     Args:
         df: Input DataFrame
-        args_col: Name of args column
-        top_k: Number of top args to select (ignored if fixed_args is provided)
-        fixed_args: If provided, use these exact arg names instead of computing Top-K
-                   (CRITICAL for test data to match training data)
+        feature_cols: List of feature column names to check
+        max_cardinality_ratio: Maximum ratio of unique values to total values
+                              If ratio >= this threshold, feature is excluded
+        verbose: Print filtering information
 
     Returns:
-        Tuple of (processed_df, selected_arg_names)
+        List of feature names that passed the cardinality check
 
-    Strategy:
-    1. Find Top-K most frequent argument names (excluding high-cardinality features)
-    2. Extract their values as features
-    3. Add statistical features (counts by type)
-
-    Intelligent filtering:
-    - Excludes path-like args (pathname, filename, etc.) - too high cardinality
-    - Excludes flags/mode args - often hex values with many unique values
-    - Excludes pointer addresses - random and unpredictable
-    - Keeps numeric args (fd, pid, size) and low-cardinality categoricals
+    Example:
+        If a feature has 950 unique values out of 1000 rows (95% unique),
+        and max_cardinality_ratio=0.8, it will be excluded.
     """
-    if args_col not in df.columns:
-        print(f"Warning: '{args_col}' column not found, skipping args extraction")
-        return df, []
+    filtered_features = []
+    excluded_features = []
 
-    # If fixed_args provided (test/inference mode), use them directly
-    if fixed_args is not None:
-        top_names = fixed_args
-        print(f"Using fixed args (inference mode): {top_names}")
-    else:
-        # Training mode: compute Top-K with intelligent filtering
-        # Args to exclude (high cardinality, unpredictable, or path-like)
-        EXCLUDE_ARG_NAMES = {
-            # Path-related (very high cardinality)
-            'pathname', 'filename', 'path', 'dirfd', 'oldname', 'newname',
-            'name', 'buf', 'buffer',
-            # Flags and modes (often hex, high cardinality)
-            'flags', 'mode', 'prot', 'whence',
-            # Pointers and addresses (random values)
-            'addr', 'ptr', 'address',
-            # Large strings (command lines, environment)
-            'cmd', 'argv', 'envp', 'data',
-        }
+    # Numeric features are always kept (cardinality check only for categorical)
+    numeric_cols = ["timestamp", "argsNum", "stack_depth", "returnValue",
+                    "time_since_last", "event_frequency", "argsNum_diff_1"]
 
-        # Step 1: Count argument name frequencies with intelligent filtering
-        arg_freq = {}
-        arg_cardinality = {}  # Track unique values to detect high cardinality
+    for feat in feature_cols:
+        # Always keep numeric features
+        if feat in numeric_cols:
+            filtered_features.append(feat)
+            continue
 
-        for args_str in df[args_col]:
-            for arg in parse_list_field(args_str):
-                if isinstance(arg, dict) and "name" in arg:
-                    name = arg.get("name")
-
-                    # Skip excluded arg names
-                    if name in EXCLUDE_ARG_NAMES:
-                        continue
-
-                    # Skip args with 'ptr' or 'addr' in the name (pointers)
-                    if 'ptr' in name.lower() or 'addr' in name.lower():
-                        continue
-
-                    # Count frequency
-                    arg_freq[name] = arg_freq.get(name, 0) + 1
-
-                    # Track unique values for cardinality check
-                    value = str(arg.get("value", ""))
-                    if name not in arg_cardinality:
-                        arg_cardinality[name] = set()
-                    arg_cardinality[name].add(value)
-
-        # Step 2: Filter out high-cardinality features
-        # If an arg has too many unique values, it's likely not predictable
-        max_cardinality_ratio = 0.7  # If >70% unique, exclude it
-        filtered_args = {}
-        for name, freq in arg_freq.items():
-            cardinality = len(arg_cardinality[name])
-            cardinality_ratio = cardinality / freq
+        # Check cardinality for categorical features
+        if feat in df.columns:
+            unique_count = df[feat].nunique()
+            total_count = len(df[feat])
+            cardinality_ratio = unique_count / total_count if total_count > 0 else 0
 
             if cardinality_ratio < max_cardinality_ratio:
-                filtered_args[name] = freq
+                filtered_features.append(feat)
             else:
-                print(f"  Excluding '{name}': high cardinality ({cardinality}/{freq} = {cardinality_ratio:.2%} unique)")
+                excluded_features.append(feat)
+                if verbose:
+                    print(f"  ✗ Excluding '{feat}': high cardinality "
+                          f"({unique_count}/{total_count} = {cardinality_ratio:.2%} unique)")
+        else:
+            # Feature doesn't exist in df, skip it
+            if verbose:
+                print(f"  ⚠ Feature '{feat}' not found in data, skipping")
 
-        # Step 3: Select Top-K from filtered args
-        top_args = sorted(filtered_args.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        top_names = [name for name, count in top_args]
+    if verbose and excluded_features:
+        print(f"\nCardinality filtering: {len(filtered_features)}/{len(feature_cols)} features retained")
+        print(f"Excluded {len(excluded_features)} high-cardinality features: {excluded_features}")
 
-        if top_names:
-            print(f"Top-{top_k} args (after intelligent filtering): {top_names}")
-
-    # Step 4: Extract features for each row
-    features_list = []
-    for args_str in df[args_col]:
-        parsed = parse_list_field(args_str)
-
-        # Top-K argument values
-        topk_features = {f'arg_{name}': None for name in top_names}
-        for arg in parsed:
-            if isinstance(arg, dict) and arg.get("name") in top_names:
-                topk_features[f'arg_{arg["name"]}'] = arg.get("value")
-
-        # Statistical features
-        # Note: argsNum already exists in BASE_FEATURES (total arg count)
-        # We only add unique information here
-        stats_features = {
-            # 'args_count': len(parsed),  # Removed: redundant with argsNum
-            # Type counts removed: provide little value in syscall context and cause multicollinearity
-            'args_unique_names': len(set(a.get('name') for a in parsed if isinstance(a, dict) and 'name' in a))
-            # Diversity of argument names (independent information from argsNum)
-        }
-
-        features_list.append({**topk_features, **stats_features})
-
-    args_df = pd.DataFrame(features_list)
-    df = pd.concat([df.reset_index(drop=True), args_df.reset_index(drop=True)], axis=1)
-
-    n_stats = len(stats_features)
-    print(f"Args processed: {len(top_names)} Top-K features + {n_stats} statistic(s) = {len(args_df.columns)} new features")
-    return df, top_names
+    return filtered_features
 
 
 def convert_dtypes_for_training(df: pd.DataFrame) -> pd.DataFrame:
     """
     Convert dtypes:
-    - Numeric: timestamp, argsNum, stack_depth, args_* statistic features
-    - Categorical: all others (except 'args' column if still present)
+    - Numeric: timestamp, argsNum, stack_depth, returnValue, temporal features
+    - Categorical: processId, processName, eventName, userId, etc.
     """
-    # Base numeric columns
-    numeric_cols = ["timestamp", "argsNum", "stack_depth"]
-
-    # Add args statistics features (all args_* features are numeric)
-    # Note: arg_* (Top-K argument values) are categorical, args_* (statistics) are numeric
-    args_stat_cols = [col for col in df.columns if col.startswith('args_')]
-    numeric_cols.extend(args_stat_cols)
+    # Numeric columns (including temporal features if present)
+    numeric_cols = ["timestamp", "argsNum", "stack_depth", "returnValue",
+                    "time_since_last", "event_frequency", "argsNum_diff_1"]
 
     # Convert types
     for col in df.columns:
         if col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        elif col != "args":
-            # arg_* features (Top-K values) and other features are categorical
+        else:
+            # Categorical features
             df[col] = df[col].astype(str)
 
-    print(f"Type conversion: {len(numeric_cols)} numeric features, "
-          f"{len([c for c in df.columns if c not in numeric_cols and c != 'args'])} categorical features")
+    actual_numeric = [c for c in numeric_cols if c in df.columns]
+    actual_categorical = [c for c in df.columns if c not in numeric_cols]
+
+    print(f"Type conversion: {len(actual_numeric)} numeric features, "
+          f"{len(actual_categorical)} categorical features")
     return df
 
 
-def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] = "topk",
-              args_top_k: int = 5, save: bool = True, fixed_args: Optional[List[str]] = None,
-              enable_temporal: bool = False) -> Tuple[pd.DataFrame, List[str]]:
+def clean_csv(input_path: str, output_path: str,
+              num_temporal_features: int = 0,
+              save: bool = True) -> pd.DataFrame:
     """
     Main data cleaning function
 
     Args:
-        process_args: How to process args column
-            - False: Drop args completely (no processing)
-            - True or "full": Full expansion (causes 100+ features - NOT RECOMMENDED)
-            - "topk" or "smart": Top-K + statistics (RECOMMENDED, 10-15 features)
-        args_top_k: Number of top frequent args to extract (default: 5)
-            - Smaller value = fewer features = less memory
-            - Recommended: 2-5 for 8GB RAM, 5-10 for 16GB+ RAM
-        fixed_args: If provided, use these exact arg names (for test/inference consistency)
-        enable_temporal: Enable temporal feature extraction (T-RFOD mode)
-            - Adds ONLY 3 temporal features (minimal overhead)
-            - Research shows 10-15% improvement in anomaly detection
-            - Features: time_since_last, event_frequency, argsNum_diff_1
-            - Increases features: 17 → 20 (only 18% increase)
+        input_path: Path to input CSV file
+        output_path: Path to save cleaned CSV
+        num_temporal_features: Number of temporal features to extract (0-3)
+            - 0: No temporal features (standard RFOD)
+            - 1: Only time_since_last
+            - 2: time_since_last + event_frequency
+            - 3: All three temporal features (RECOMMENDED for T-RFOD)
+        save: Whether to save cleaned data to file
 
     Returns:
-        Tuple of (cleaned_df, selected_arg_names)
+        cleaned_df: Cleaned DataFrame ready for RFOD training/inference
     """
     print(f"Processing: {input_path}")
-    if enable_temporal:
-        print("⏰ T-RFOD Mode: Temporal features ENABLED")
     df = pd.read_csv(input_path)
-    selected_arg_names = []
 
+    # Compute stack_depth from stackAddresses if present
     if "stackAddresses" in df.columns:
-        df["stackAddresses"] = df["stackAddresses"].apply(parse_list_field)
+        # Parse stackAddresses (it's a list-like string)
+        df["stackAddresses"] = df["stackAddresses"].apply(
+            lambda x: ast.literal_eval(str(x)) if pd.notna(x) and x != '' else []
+        )
         df["stack_depth"] = df["stackAddresses"].apply(len)
-        print("stack_depth feature computed")
+        print("stack_depth feature computed from stackAddresses")
 
-    drop_cols = ["threadId", "eventId", "stackAddresses"]
+    # Drop unused columns (identifiers and raw data)
+    drop_cols = ["Id", "threadId", "eventId", "stackAddresses", "args"]
     df = df.drop(columns=[col for col in drop_cols if col in df.columns], errors="ignore")
-    print(f"Dropped columns: {drop_cols}")
+    print(f"Dropped columns: {[c for c in drop_cols if c in df.columns]}")
 
-    args_col_present = "args" in df.columns
-
-    if not args_col_present:
-        if process_args:
-            print("Warning: 'args' column not found")
-    elif process_args == False:
-        df = df.drop(columns=["args"], errors="ignore")
-        print("Args dropped (process_args=False)")
-    elif process_args in [True, "full"]:
-        print("WARNING: Full args expansion may create 100+ sparse features!")
-        df = extract_arg_features(df, args_col="args")
-        df = df.drop(columns=["args"], errors="ignore")
-    elif process_args in ["topk", "smart"]:
-        df, selected_arg_names = extract_args_topk_stats(df, args_col="args", top_k=args_top_k, fixed_args=fixed_args)
-        df = df.drop(columns=["args"], errors="ignore")
-    else:
-        raise ValueError(f"Unknown process_args value: {process_args}. Use False, True, 'full', 'topk', or 'smart'")
-
+    # Normalize timestamp by processId (relative time within each process)
     if "processId" in df.columns and "timestamp" in df.columns:
         df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
         df["timestamp"] = df.groupby("processId")["timestamp"].transform(lambda x: x - x.min())
@@ -411,21 +262,24 @@ def clean_csv(input_path: str, output_path: str, process_args: Union[bool, str] 
     else:
         print("Warning: Missing processId or timestamp, skipping normalization")
 
-    # Extract temporal features if enabled (T-RFOD mode)
-    if enable_temporal:
+    # Extract temporal features if requested (T-RFOD mode)
+    if num_temporal_features > 0:
         df = extract_temporal_features(
             df,
+            num_features=num_temporal_features,
             process_col="processId",
             timestamp_col="timestamp",
             verbose=True
         )
 
+    # Convert data types
     df = convert_dtypes_for_training(df)
 
     if save:
         df.to_csv(output_path, index=False)
         print(f"Cleaned data saved to: {output_path}")
-    return df, selected_arg_names
+
+    return df
 
 
 # ============================================================================
@@ -868,21 +722,20 @@ PREDICTABLE_FEATURES = [
     "parentProcessId",  # Related to processId and process hierarchy
     "userId",           # Related to process behavior and privileges
     "mountNamespace",   # Related to containerization and isolation
-    "processName",      # Strongly related to eventName, args, returnValue
+    "processName",      # Strongly related to eventName, returnValue
     "hostName",         # Related to system context
     "eventName",        # Core feature - related to almost everything
     "argsNum",          # Related to eventName and event type
     "returnValue",      # Related to eventName and success/failure
     "stack_depth",      # Related to call chain and event context
-    # arg_* features    # Intelligently filtered: excludes high-cardinality (paths, flags)
-    # args_* features   # Statistical features related to event complexity
+    # Temporal features (T-RFOD): time_since_last, event_frequency, argsNum_diff_1
 ]
 
 
 def _get_feature_columns(df: pd.DataFrame) -> List[str]:
     """
     Dynamically extract feature columns from cleaned data
-    Includes: BASE_FEATURES + args features (arg_*, args_*count, args_unique_names)
+    Includes: BASE_FEATURES + temporal features (if present)
     """
     feature_cols = []
 
@@ -891,11 +744,11 @@ def _get_feature_columns(df: pd.DataFrame) -> List[str]:
         if feat in df.columns:
             feature_cols.append(feat)
 
-    # Add args-related features (generated by extract_args_topk_stats)
-    for col in df.columns:
-        if col.startswith('arg_') or col.startswith('args_'):
-            if col not in feature_cols:
-                feature_cols.append(col)
+    # Add temporal features if present (T-RFOD mode)
+    temporal_features = ["time_since_last", "event_frequency", "argsNum_diff_1"]
+    for feat in temporal_features:
+        if feat in df.columns and feat not in feature_cols:
+            feature_cols.append(feat)
 
     return feature_cols
 
@@ -946,14 +799,13 @@ def _get_predictable_features(feature_cols: List[str],
     return predictable, excluded
 
 
-def _safe_clean_csv(input_path: str, process_args: Union[bool, str] = "topk",
-                    args_top_k: int = 5, fixed_args: Optional[List[str]] = None,
-                    enable_temporal: bool = False) -> Tuple[pd.DataFrame, List[str]]:
+def _safe_clean_csv(input_path: str, num_temporal_features: int = 0) -> pd.DataFrame:
+    """Helper to clean CSV without saving to disk"""
     tmp_out = os.path.join(tempfile.gettempdir(), f"cleaned_{os.path.basename(input_path)}")
-    df, selected_arg_names = clean_csv(input_path, tmp_out, process_args=process_args,
-                                        args_top_k=args_top_k, save=False, fixed_args=fixed_args,
-                                        enable_temporal=enable_temporal)
-    return df, selected_arg_names
+    df = clean_csv(input_path, tmp_out,
+                   num_temporal_features=num_temporal_features,
+                   save=False)
+    return df
 
 
 def _select_and_align_features(df: pd.DataFrame, feature_names: List[str]) -> pd.DataFrame:
@@ -991,28 +843,27 @@ def train_and_infer(
     max_samples: Optional[Union[int, float]] = None,
     random_state: int = 42,
     n_jobs: int = -1,
-    process_args: Union[bool, str] = "topk",
-    args_top_k: int = 5,  # NEW: control number of top args features
     drop_labelled_anomalies: bool = False,
     normalize_method: str = "minmax",
     out_dir: str = "model",
     verbose: bool = True,
     exclude_weak: bool = True,
-    enable_temporal: bool = False  # NEW: T-RFOD temporal features (only 3 features)
+    num_temporal_features: int = 0,  # 0-3 temporal features (T-RFOD)
+    max_cardinality_ratio: float = 0.8  # Cardinality filtering threshold
 ) -> Dict:
 
     results = {}
 
     if verbose:
         print("\n" + "="*60)
-        print("STEP 1: Training Model")
+        print("STEP 1: Data Processing & Feature Selection")
         print("="*60)
 
     if not os.path.exists(train_csv):
         raise FileNotFoundError(f"Train file not found: {train_csv}")
 
-    df_train, selected_arg_names = _safe_clean_csv(train_csv, process_args=process_args, args_top_k=args_top_k,
-                                                     enable_temporal=enable_temporal)
+    # Clean training data
+    df_train = _safe_clean_csv(train_csv, num_temporal_features=num_temporal_features)
     if df_train.empty:
         raise ValueError(f"Failed to load train data: {train_csv}")
 
@@ -1022,26 +873,43 @@ def train_and_infer(
         if verbose:
             print(f"Removed {before - len(df_train)} labeled anomalies from training set")
 
-    # Dynamically get feature columns (includes BASE_FEATURES + args features)
+    # Get all available features
     feature_cols = _get_feature_columns(df_train)
     if verbose:
         base_count = len([f for f in feature_cols if f in BASE_FEATURES])
-        args_count = len([f for f in feature_cols if f.startswith('arg_') or f.startswith('args_')])
-        print(f"Feature extraction: {base_count} base features + {args_count} args features = {len(feature_cols)} total")
+        temporal_count = len([f for f in feature_cols if f in ["time_since_last", "event_frequency", "argsNum_diff_1"]])
+        print(f"Available features: {base_count} base + {temporal_count} temporal = {len(feature_cols)} total")
 
+    # Apply cardinality filtering
+    if max_cardinality_ratio < 1.0:
+        if verbose:
+            print(f"\nApplying cardinality filtering (threshold: {max_cardinality_ratio:.1%})...")
+        feature_cols = filter_high_cardinality_features(
+            df_train,
+            feature_cols,
+            max_cardinality_ratio=max_cardinality_ratio,
+            verbose=verbose
+        )
+
+    # Select features for training
     X_train = _select_and_align_features(df_train, feature_cols)
     if X_train.empty:
         raise ValueError("Training data is empty")
 
     if verbose:
-        print(f"Train samples: {len(X_train)}, Features: {len(feature_cols)}")
+        print(f"\nFinal training set: {len(X_train)} samples × {len(feature_cols)} features")
+
+    if verbose:
+        print("\n" + "="*60)
+        print("STEP 2: Training RFOD Model")
+        print("="*60)
 
     params = {
         'alpha': alpha,
         'beta': beta,
         'n_estimators': n_estimators,
         'max_depth': max_depth,
-        'max_samples': max_samples,  # NEW: memory optimization
+        'max_samples': max_samples,
         'random_state': random_state,
         'n_jobs': n_jobs,
         'verbose': verbose,
@@ -1053,7 +921,7 @@ def train_and_infer(
 
     if verbose:
         print("\n" + "="*60)
-        print("STEP 2: Saving Model")
+        print("STEP 3: Saving Model")
         print("="*60)
 
     os.makedirs(out_dir, exist_ok=True)
@@ -1071,8 +939,9 @@ def train_and_infer(
     model_data = {
         'model': rfod,
         'params': params,
-        'feature_cols': feature_cols,  # Save feature list for inference consistency
-        'selected_arg_names': selected_arg_names,  # Save arg names for test consistency
+        'feature_cols': feature_cols,  # CRITICAL: Save feature list for inference consistency
+        'num_temporal_features': num_temporal_features,  # For test consistency
+        'max_cardinality_ratio': max_cardinality_ratio,  # Not used in test (features already determined)
         'saved_at': datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -1084,28 +953,30 @@ def train_and_infer(
 
     results['model_path'] = model_path
     results['params'] = params
+    results['feature_cols'] = feature_cols
 
     if test_csv is not None:
         if verbose:
             print("\n" + "="*60)
-            print("STEP 3: Testing Inference")
+            print("STEP 4: Testing Inference")
             print("="*60)
 
         if not os.path.exists(test_csv):
             raise FileNotFoundError(f"Test file not found: {test_csv}")
 
-        # CRITICAL: Use the same arg names as training for consistency
-        df_test, _ = _safe_clean_csv(test_csv, process_args=process_args, args_top_k=args_top_k,
-                                      fixed_args=selected_arg_names,
-                                      enable_temporal=enable_temporal)
+        # CRITICAL: Use the same temporal features as training
+        df_test = _safe_clean_csv(test_csv, num_temporal_features=num_temporal_features)
 
-        if 'Id' not in df_test.columns:
+        # Save Id column before feature extraction
+        if 'Id' in df_test.columns:
+            test_ids = df_test['Id'].copy()
+        else:
             raise ValueError("Test set must contain 'Id' column")
 
         if verbose:
             print(f"Test samples: {len(df_test)}")
 
-        # Use the same feature columns as training
+        # CRITICAL: Use the EXACT same feature columns as training (no cardinality filtering on test)
         X_test = _select_and_align_features(df_test, feature_cols)
 
         if X_test.empty:
@@ -1146,7 +1017,7 @@ def train_and_infer(
             raise ValueError(f"Unknown normalize_method: {normalize_method}")
 
         out_df = pd.DataFrame({
-            'Id': df_test['Id'],
+            'Id': test_ids,
             'target': normalized_scores
         })
 
@@ -1178,176 +1049,127 @@ def train_and_infer(
 
 if __name__ == "__main__":
     print("="*70)
-    print("RFOD Training and Inference")
+    print("RFOD Training and Inference (Simplified Version)")
     print("="*70)
 
     # ========================================================================
-    # 配置选择：根据你的需求选择一个配置
+    # Configuration Selection
     # ========================================================================
-
-    # 配置7：只依赖智能过滤（推荐！根本解决内存问题）
-    USE_CONFIG = 7
+    USE_CONFIG = 1  # Default: Standard RFOD with cardinality filtering
 
     if USE_CONFIG == 1:
-        print("配置1：原始参数 + 不使用 args 特征（恢复到修复前）")
-        print("  - 特征数: ~9 (不包含 args)")
-        print("  - max_depth=20, n_estimators=80")
-        print("  - 内存: 与之前相同 ✅")
-        config = {
-            'batch_size': 10000,
-            'alpha': 0.005,
-            'beta': 0.7,
-            'n_estimators': 80,
-            'max_depth': 20,
-            'max_samples': None,
-            'n_jobs': 4,
-            'process_args': False,  # ⭐ 关键：不使用 args 特征
-            'args_top_k': 0,  # 不使用 args
-            'exclude_weak': True,
-            'enable_temporal': False,
-        }
-
-    elif USE_CONFIG == 2:
-        print("配置2：降低深度 + 使用 args 特征（推荐平衡）")
-        print("  - 特征数: ~17 (args_top_k=5 + 1 stat)")
-        print("  - max_depth=12, n_estimators=50")
-        print("  - 内存: 适中")
-        config = {
-            'batch_size': 10000,
-            'alpha': 0.005,
-            'beta': 0.7,
-            'n_estimators': 50,
-            'max_depth': 12,  # ⭐ 降低深度
-            'max_samples': None,
-            'n_jobs': 4,
-            'process_args': "topk",  # 使用 args
-            'args_top_k': 5,  # Top-5 参数特征
-            'exclude_weak': True,
-            'enable_temporal': False,
-        }
-
-    elif USE_CONFIG == 3:
-        print("配置3：使用 max_samples + 保持原始参数")
-        print("  - 特征数: ~17 (args_top_k=5 + 1 stat)")
-        print("  - max_depth=20, n_estimators=80, max_samples=0.5")
-        print("  - 内存: 通过采样降低")
-        config = {
-            'batch_size': 10000,
-            'alpha': 0.005,
-            'beta': 0.7,
-            'n_estimators': 80,
-            'max_depth': 20,
-            'max_samples': 0.5,  # ⭐ 每棵树只用 50% 样本
-            'n_jobs': 4,
-            'process_args': "topk",
-            'args_top_k': 5,
-            'exclude_weak': True,
-            'enable_temporal': False,
-        }
-
-    elif USE_CONFIG == 4:
-        print("配置4：内存优化（8GB RAM）")
-        print("  - 特征数: ~13 (args_top_k=2 + 1 stat)")
-        print("  - max_depth=10, n_estimators=40, max_samples=0.7")
-        print("  - 内存: 最低")
-        config = {
-            'batch_size': 10000,
-            'alpha': 0.005,
-            'beta': 0.7,
-            'n_estimators': 40,
-            'max_depth': 10,  # ⭐ 适中深度
-            'max_samples': 0.7,
-            'n_jobs': 2,
-            'process_args': "topk",
-            'args_top_k': 2,  # ⭐ 只用 Top-2 参数（减少特征）
-            'exclude_weak': True,
-            'enable_temporal': False,
-        }
-
-    elif USE_CONFIG == 5:
-        print("配置5：原始参数 + 降低 args_top_k（辅助优化）")
-        print("  - 特征数: ~13 (args_top_k=2 + 1 stat)")
-        print("  - max_depth=20, n_estimators=80")
-        print("  - 内存: 略微降低（不能根本解决）")
-        config = {
-            'batch_size': 10000,
-            'alpha': 0.005,
-            'beta': 0.7,
-            'n_estimators': 80,
-            'max_depth': 20,
-            'max_samples': None,
-            'n_jobs': 4,
-            'process_args': "topk",
-            'args_top_k': 2,  # ⭐ 只用 Top-2 参数
-            'exclude_weak': True,
-            'enable_temporal': False,
-        }
-
-    elif USE_CONFIG == 6:
-        print("配置6：智能 args 过滤 + 保守参数（保守）")
-        print("  - 自动排除: pathname, flags 等高基数特征")
-        print("  - 基数过滤: 排除 >70% 唯一值的特征")
-        print("  - 特征数: ~17 (args_top_k=5 + 1 stat)")
-        print("  - max_depth=10, n_estimators=50, max_samples=0.7")
-        print("  - 内存: 双重降级（过于保守）")
-        config = {
-            'batch_size': 10000,
-            'alpha': 0.005,
-            'beta': 0.7,
-            'n_estimators': 50,
-            'max_depth': 10,
-            'max_samples': 0.7,  # 过于保守
-            'n_jobs': 2,
-            'process_args': "topk",
-            'args_top_k': 5,
-            'exclude_weak': True,
-            'enable_temporal': False,
-        }
-
-    elif USE_CONFIG == 7:
-        print("配置7：智能过滤 + 精简统计特征（推荐）⭐⭐")
-        print("  - 自动排除: pathname, flags 等高基数特征")
-        print("  - 基数过滤: 排除 >70% 唯一值的特征")
-        print("  - 精简统计: 只保留 args_unique_names（去除冗余）")
-        print("  - 特征数: ~17 (11 base + 5 arg + 1 stat)")
-        print("  - max_samples=None (使用全部样本)")
-        print("  - 根本解决内存问题，性能最优")
+        print("配置1：标准 RFOD + 基数过滤 (推荐) ⭐⭐⭐")
+        print("  - BASE_FEATURES: 11 个基础特征")
+        print("  - 基数过滤: 排除 >80% 唯一值的特征")
+        print("  - 时间特征: 不使用 (标准 RFOD)")
+        print("  - 特征数: ~11 (视基数过滤结果)")
         config = {
             'batch_size': 10000,
             'alpha': 0.005,
             'beta': 0.7,
             'n_estimators': 60,
-            'max_depth': 12,           # ⭐ 提高深度（特征过滤后可以）
-            'max_samples': None,       # ⭐ 不需要采样
+            'max_depth': 12,
+            'max_samples': None,
             'n_jobs': 2,
-            'process_args': "topk",
-            'args_top_k': 5,
             'exclude_weak': True,
-            'enable_temporal': False,  # 标准RFOD
+            'num_temporal_features': 0,     # 不使用时间特征
+            'max_cardinality_ratio': 0.8,  # 排除 >80% 唯一值的特征
         }
 
-    elif USE_CONFIG == 8:
-        print("配置8：T-RFOD 时间感知模式（精简版）⭐⭐⭐")
-        print("  - ⏰ 启用时间特征提取（Temporal-RFOD）")
-        print("  - 只增加 3 个核心时间特征（最小开销）")
-        print("    1. time_since_last: 时间间隔（时间依赖）")
-        print("    2. event_frequency: 事件频率（序列模式）")
-        print("    3. argsNum_diff_1: 参数变化（演化相关性）")
-        print("  - 特征数: 20 (17 base + 3 temporal, 仅增加18%)")
-        print("  - 研究显示：3个时间特征可提升检测率 10-15%")
-        print("  - 内存友好：开销极小 ✅")
+    elif USE_CONFIG == 2:
+        print("配置2：T-RFOD (1个时间特征) ⏰")
+        print("  - BASE_FEATURES: 11 个")
+        print("  - 时间特征: time_since_last (时间依赖)")
+        print("  - 基数过滤: 80%")
+        print("  - 特征数: ~12")
         config = {
             'batch_size': 10000,
             'alpha': 0.005,
             'beta': 0.7,
-            'n_estimators': 60,        # 与配置7相同
-            'max_depth': 12,           # 与配置7相同
-            'max_samples': None,       # 不需要采样
+            'n_estimators': 60,
+            'max_depth': 12,
+            'max_samples': None,
             'n_jobs': 2,
-            'process_args': "topk",
-            'args_top_k': 5,           # 与配置7相同
             'exclude_weak': True,
-            'enable_temporal': True,   # ⭐ 启用T-RFOD（只3个特征）
+            'num_temporal_features': 1,     # 只使用 time_since_last
+            'max_cardinality_ratio': 0.8,
+        }
+
+    elif USE_CONFIG == 3:
+        print("配置3：T-RFOD (2个时间特征) ⏰⏰")
+        print("  - BASE_FEATURES: 11 个")
+        print("  - 时间特征: time_since_last + event_frequency")
+        print("  - 基数过滤: 80%")
+        print("  - 特征数: ~13")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 60,
+            'max_depth': 12,
+            'max_samples': None,
+            'n_jobs': 2,
+            'exclude_weak': True,
+            'num_temporal_features': 2,     # time_since_last + event_frequency
+            'max_cardinality_ratio': 0.8,
+        }
+
+    elif USE_CONFIG == 4:
+        print("配置4：T-RFOD (完整版 - 3个时间特征) ⏰⏰⏰ 推荐")
+        print("  - BASE_FEATURES: 11 个")
+        print("  - 时间特征: time_since_last + event_frequency + argsNum_diff_1")
+        print("  - 基数过滤: 80%")
+        print("  - 特征数: ~14")
+        print("  - 预期提升: 10-15% 检测率")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 60,
+            'max_depth': 12,
+            'max_samples': None,
+            'n_jobs': 2,
+            'exclude_weak': True,
+            'num_temporal_features': 3,     # 全部3个时间特征
+            'max_cardinality_ratio': 0.8,
+        }
+
+    elif USE_CONFIG == 5:
+        print("配置5：严格基数过滤 (更保守)")
+        print("  - BASE_FEATURES: 11 个")
+        print("  - 基数过滤: 排除 >60% 唯一值的特征 (更严格)")
+        print("  - 时间特征: 不使用")
+        print("  - 特征数: 更少 (取决于数据)")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 60,
+            'max_depth': 12,
+            'max_samples': None,
+            'n_jobs': 2,
+            'exclude_weak': True,
+            'num_temporal_features': 0,
+            'max_cardinality_ratio': 0.6,  # 更严格的阈值
+        }
+
+    elif USE_CONFIG == 6:
+        print("配置6：无基数过滤 (使用全部特征)")
+        print("  - BASE_FEATURES: 11 个")
+        print("  - 基数过滤: 关闭 (使用所有特征)")
+        print("  - 时间特征: 不使用")
+        print("  - 适用于: 高基数特征也有价值的场景")
+        config = {
+            'batch_size': 10000,
+            'alpha': 0.005,
+            'beta': 0.7,
+            'n_estimators': 60,
+            'max_depth': 12,
+            'max_samples': None,
+            'n_jobs': 2,
+            'exclude_weak': True,
+            'num_temporal_features': 0,
+            'max_cardinality_ratio': 1.0,  # 不过滤任何特征
         }
 
     print("="*70 + "\n")
@@ -1357,6 +1179,7 @@ if __name__ == "__main__":
         test_csv="data/processes_test.csv",
         output_path="result/submission.csv",
 
+        # RFOD model parameters
         batch_size=config['batch_size'],
         alpha=config['alpha'],
         beta=config['beta'],
@@ -1366,13 +1189,13 @@ if __name__ == "__main__":
         random_state=42,
         n_jobs=config['n_jobs'],
 
-        process_args=config['process_args'],
-        args_top_k=config['args_top_k'],  # NEW: 控制 args 特征数量
+        # Feature selection parameters
         drop_labelled_anomalies=False,
         exclude_weak=config['exclude_weak'],
+        num_temporal_features=config['num_temporal_features'],  # 0-3 temporal features
+        max_cardinality_ratio=config['max_cardinality_ratio'],  # Cardinality filtering
 
-        enable_temporal=config.get('enable_temporal', False),  # T-RFOD (only 3 features)
-
+        # Output parameters
         normalize_method="minmax",
         out_dir="model",
         verbose=True
