@@ -13,9 +13,32 @@ from typing import Dict, List, Tuple
 import glob
 import tempfile
 
-# Import cleaning functions from rfod_complete
+# Import cleaning functions and RFOD class from rfod_complete
 sys.path.insert(0, os.path.dirname(__file__))
-from rfod_complete import clean_csv, _select_and_align_features
+
+# Import all necessary components for pickle deserialization
+try:
+    from rfod_complete import (
+        clean_csv,
+        _select_and_align_features,
+        RFOD,
+        filter_high_cardinality_features,
+        convert_dtypes_for_training,
+        extract_temporal_features
+    )
+
+    # Register RFOD in the global namespace for pickle compatibility
+    # This helps pickle find the class when loading old models
+    import rfod_complete
+    sys.modules['__main__'].RFOD = RFOD
+
+    # Also ensure rfod_complete is accessible
+    sys.modules['rfod_complete'] = rfod_complete
+
+except ImportError as e:
+    print(f"❌ Failed to import from rfod_complete: {e}")
+    print(f"   Make sure rfod_complete.py is in the same directory")
+    sys.exit(1)
 
 
 def load_and_clean_validation_data(val_csv: str, num_temporal_features: int = 0) -> Tuple[pd.DataFrame, pd.Series]:
@@ -55,6 +78,35 @@ def load_and_clean_validation_data(val_csv: str, num_temporal_features: int = 0)
     return df_cleaned, y
 
 
+class RenameUnpickler(pickle.Unpickler):
+    """
+    Custom unpickler to handle module path changes
+    Redirects old module paths to current rfod_complete module
+    """
+    def find_class(self, module, name):
+        # Redirect various possible old module names to rfod_complete
+        if module == '__main__' or module.startswith('rfod'):
+            try:
+                return getattr(rfod_complete, name)
+            except AttributeError:
+                pass
+        return super().find_class(module, name)
+
+
+def load_model_safe(model_path: str):
+    """
+    Safely load a pickled model with module path handling
+
+    Args:
+        model_path: Path to model pickle file
+
+    Returns:
+        model_data dictionary or raises exception
+    """
+    with open(model_path, 'rb') as f:
+        return RenameUnpickler(f).load()
+
+
 def evaluate_model(model_path: str, val_csv: str, batch_size: int = 50000) -> Dict:
     """
     Evaluate a single model on validation set
@@ -71,12 +123,13 @@ def evaluate_model(model_path: str, val_csv: str, batch_size: int = 50000) -> Di
     print(f"Evaluating: {os.path.basename(model_path)}")
     print(f"{'='*70}")
 
-    # Load model
+    # Load model using custom unpickler for compatibility
     try:
-        with open(model_path, 'rb') as f:
-            model_data = pickle.load(f)
+        model_data = load_model_safe(model_path)
     except Exception as e:
         print(f"❌ Failed to load model: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
     rfod = model_data.get('model')
