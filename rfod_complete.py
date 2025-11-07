@@ -1021,7 +1021,10 @@ def train_and_infer(
             'target': normalized_scores
         })
 
-        # Sort by Id to match original test set order
+        # Ensure Id is numeric for proper sorting (not string sorting)
+        out_df['Id'] = pd.to_numeric(out_df['Id'], errors='coerce')
+
+        # Sort by Id (numeric order) to match original test set order
         out_df = out_df.sort_values('Id').reset_index(drop=True)
 
         output_dir = os.path.dirname(output_path)
