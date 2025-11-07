@@ -250,7 +250,8 @@ def clean_csv(input_path: str, output_path: str,
         print("stack_depth feature computed from stackAddresses")
 
     # Drop unused columns (identifiers and raw data)
-    drop_cols = ["Id", "threadId", "eventId", "stackAddresses", "args"]
+    # NOTE: Keep "Id" column - it's needed for test set predictions
+    drop_cols = ["threadId", "eventId", "stackAddresses", "args"]
     df = df.drop(columns=[col for col in drop_cols if col in df.columns], errors="ignore")
     print(f"Dropped columns: {[c for c in drop_cols if c in df.columns]}")
 
