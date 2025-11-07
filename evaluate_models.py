@@ -167,7 +167,7 @@ def evaluate_model(model_path: str, val_csv: str, batch_size: int = 50000) -> Di
     # Predict anomaly scores
     print("Predicting...")
     try:
-        scores = rfod.predict(X_test, clip_scores=False, batch_size=batch_size)
+        scores = rfod.predict(X_val, clip_scores=False, batch_size=batch_size)
     except Exception as e:
         print(f"❌ Prediction failed: {e}")
         return None
