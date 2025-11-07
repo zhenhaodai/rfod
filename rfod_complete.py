@@ -965,14 +965,13 @@ def train_and_infer(
         if not os.path.exists(test_csv):
             raise FileNotFoundError(f"Test file not found: {test_csv}")
 
-        # CRITICAL: Use the same temporal features as training
+        # Clean the test data (this may sort the data for temporal features)
         df_test = _safe_clean_csv(test_csv, num_temporal_features=num_temporal_features)
 
-        # Save Id column before feature extraction
-        if 'Id' in df_test.columns:
-            test_ids = df_test['Id'].copy()
-        else:
+        # CRITICAL: Extract Id column AFTER cleaning (to match the sorted order)
+        if 'Id' not in df_test.columns:
             raise ValueError("Test set must contain 'Id' column")
+        test_ids = df_test['Id'].copy()  # This Id matches the order of df_test after sorting
 
         if verbose:
             print(f"Test samples: {len(df_test)}")
